@@ -23,6 +23,9 @@ const ESC: u8 = 0x1b;
 pub(crate) const RAW_INPUT_IDLE_FLUSH_TIMEOUT_MS: i32 = 10;
 #[cfg(unix)]
 pub(crate) const MOUSE_ACTIVE_ESCAPE_SEQUENCE_FLUSH_TIMEOUT_MS: i32 = 150;
+/// Length of the `CSI ?` prefix shared by every DEC private mode reply. A buffer this short
+/// cannot yet be attributed to a colour scheme report.
+const DEC_PRIVATE_REPLY_PREFIX_LEN: usize = 3;
 pub(crate) const GHOSTTY_COLOR_SCHEME_DARK_REPORT: &[u8] = b"\x1b[?997;1n";
 pub(crate) const GHOSTTY_COLOR_SCHEME_LIGHT_REPORT: &[u8] = b"\x1b[?997;2n";
 const BRACKETED_PASTE_START: &[u8] = b"\x1b[200~";
@@ -336,6 +339,20 @@ impl RawInputByteFramer {
         }
 
         if starts_with_incomplete_host_color_scheme_report(&self.buffer) {
+            // A host with mode 2031 enabled reports appearance changes unsolicited, so no reply
+            // window is open when one of those splits across reads. Keep waiting for the
+            // terminator once the buffer can only be a colour scheme report. `CSI ?` alone is
+            // shared with every other DEC private reply and with a typed escape chord, so it
+            // stays capped by the one-flush path below.
+            if self.host_color_scheme_change_tracking
+                && self.buffer.len() > DEC_PRIVATE_REPLY_PREFIX_LEN
+            {
+                tracing::trace!(
+                    len = self.buffer.len(),
+                    "waiting for host color scheme report terminator"
+                );
+                return chunks;
+            }
             if self.host_appearance_reply_awaited && !self.held_pending_host_reply_esc {
                 self.held_pending_host_reply_esc = true;
                 tracing::trace!(
@@ -2590,6 +2607,34 @@ mod tests {
             framer.push(b"?997;2n"),
             vec![GHOSTTY_COLOR_SCHEME_LIGHT_REPORT.to_vec()]
         );
+    }
+
+    #[test]
+    fn opted_in_byte_framer_reassembles_unsolicited_split_color_scheme_report() {
+        let mut framer = RawInputByteFramer::default();
+        framer.enable_host_color_scheme_change_tracking();
+
+        // No query is outstanding: a host with mode 2031 enabled pushes this report on its
+        // own, so the reply window that protects a solicited answer is closed here.
+        assert!(framer.push(b"\x1b[?997;").is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        assert_eq!(
+            framer.push(b"1n"),
+            vec![GHOSTTY_COLOR_SCHEME_DARK_REPORT.to_vec()]
+        );
+    }
+
+    #[test]
+    fn opted_in_byte_framer_does_not_hold_bare_dec_private_prefix() {
+        let mut framer = RawInputByteFramer::default();
+        framer.enable_host_color_scheme_change_tracking();
+
+        // `CSI ?` alone is shared with every other DEC private reply and with a typed escape
+        // chord, so it must not be held open waiting for a colour scheme report.
+        assert!(framer.push(b"\x1b[?").is_empty());
+        assert!(framer.flush_timeout().is_empty());
+        assert!(framer.push(b"997;1n").is_empty());
     }
 
     #[test]

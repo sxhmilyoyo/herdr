@@ -230,6 +230,10 @@ impl TerminalRuntime {
         self.0.apply_host_terminal_appearance(appearance);
     }
 
+    pub fn reassert_host_terminal_appearance(&self) {
+        self.0.reassert_host_terminal_appearance();
+    }
+
     pub fn begin_graceful_release(&self, agent: crate::detect::Agent) {
         self.0.begin_graceful_release(agent);
     }

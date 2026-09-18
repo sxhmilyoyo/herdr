@@ -581,6 +581,10 @@ impl PaneTerminal {
         self.ghostty.apply_host_terminal_appearance(appearance)
     }
 
+    pub fn host_terminal_appearance_report(&self) -> Option<Bytes> {
+        self.ghostty.host_terminal_appearance_report()
+    }
+
     pub fn has_transient_default_color_override(&self) -> bool {
         self.ghostty.has_transient_default_color_override()
     }
@@ -1236,10 +1240,15 @@ impl GhosttyPaneTerminal {
         });
         let previous = core.terminal.set_color_scheme(color_scheme);
 
-        let transitioned = matches!(
-            (previous, color_scheme),
-            (Some(previous), Some(current)) if previous != current
-        );
+        let transitioned = match (previous, color_scheme) {
+            (Some(previous), Some(current)) => previous != current,
+            // A pane can outlive the appearance being unknown: it may spawn before any client
+            // reports one, or be restored from a handoff. Ghostty has no unknown state and
+            // reports every real change, so a subscribed child must be told once the appearance
+            // becomes known, otherwise it keeps a theme it picked with no information.
+            (None, Some(_)) => true,
+            (_, None) => false,
+        };
         if !transitioned
             || !core
                 .terminal
@@ -1249,6 +1258,30 @@ impl GhosttyPaneTerminal {
             return None;
         }
         appearance.map(|appearance| Bytes::from_static(appearance.color_scheme_report()))
+    }
+
+    /// Report the known host colour scheme to a subscribed child without requiring a transition.
+    ///
+    /// The appearance report and the pane's default background reach a child on separate paths,
+    /// so a child that re-reads `OSC 11` when the report arrives can still observe the previous
+    /// background. Mode 2031 is a colour palette update notification rather than an edge, so
+    /// notifying again once the background has actually changed is both within the mode's meaning
+    /// and what such a child needs in order to converge.
+    pub fn host_terminal_appearance_report(&self) -> Option<Bytes> {
+        let core = self.core.lock().ok()?;
+        let color_scheme = core.terminal.color_scheme()?;
+        if !core
+            .terminal
+            .mode_get(crate::ghostty::MODE_COLOR_SCHEME_REPORT)
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        let appearance = match color_scheme {
+            crate::ghostty::ColorScheme::Dark => crate::terminal_theme::HostAppearance::Dark,
+            crate::ghostty::ColorScheme::Light => crate::terminal_theme::HostAppearance::Light,
+        };
+        Some(Bytes::from_static(appearance.color_scheme_report()))
     }
 
     pub fn has_transient_default_color_override(&self) -> bool {
@@ -6104,6 +6137,53 @@ mod tests {
     }
 
     #[test]
+    fn host_appearance_report_reasserts_without_a_transition() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(20, 5, 0).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        let pane_id = PaneId::from_raw(1);
+
+        // Unknown scheme, and no subscriber: nothing to re-assert.
+        assert!(pane.host_terminal_appearance_report().is_none());
+        pane.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Dark));
+        assert!(pane.host_terminal_appearance_report().is_none());
+
+        // Subscribed and known: re-assert the current scheme even though nothing transitioned.
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[?2031h", &tx);
+        assert_eq!(
+            pane.host_terminal_appearance_report(),
+            Some(Bytes::from_static(b"\x1b[?997;1n"))
+        );
+        // Repeatable: this is a notification, not an edge.
+        assert_eq!(
+            pane.host_terminal_appearance_report(),
+            Some(Bytes::from_static(b"\x1b[?997;1n"))
+        );
+
+        // An unknown scheme has nothing to report.
+        pane.apply_host_terminal_appearance(None);
+        assert!(pane.host_terminal_appearance_report().is_none());
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn first_known_color_scheme_reports_to_subscribed_child() {
+        let (tx, mut rx) = mpsc::channel(4);
+        let terminal = crate::ghostty::Terminal::new(20, 5, 0).unwrap();
+        let pane = GhosttyPaneTerminal::new(terminal, tx.clone()).unwrap();
+        let pane_id = PaneId::from_raw(1);
+
+        // The child subscribes while the host appearance is still unknown, which is the
+        // ordering a pane spawned before any client reported an appearance sees.
+        pane.process_pty_bytes(pane_id, 0, b"\x1b[?2031h", &tx);
+        assert_eq!(
+            pane.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Dark)),
+            Some(Bytes::from_static(b"\x1b[?997;1n"))
+        );
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
     fn color_scheme_queries_and_live_updates_follow_terminal_mode() {
         let (tx, mut rx) = mpsc::channel(4);
         let terminal = crate::ghostty::Terminal::new(20, 5, 0).unwrap();
@@ -6131,9 +6211,12 @@ mod tests {
         assert!(pane.apply_host_terminal_appearance(None).is_none());
         let unknown_query = pane.process_pty_bytes(pane_id, 0, b"\x1b[?996n", &tx);
         assert!(unknown_query.terminal_responses.is_empty());
-        assert!(pane
-            .apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Dark))
-            .is_none());
+        // Re-learning an appearance after it became unknown reports to the child, whose last
+        // known scheme may no longer match the host.
+        assert_eq!(
+            pane.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Dark)),
+            Some(Bytes::from_static(b"\x1b[?997;1n"))
+        );
 
         pane.process_pty_bytes(pane_id, 0, b"\x1bc", &tx);
         assert!(pane

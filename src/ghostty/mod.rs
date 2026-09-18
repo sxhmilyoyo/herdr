@@ -1091,6 +1091,10 @@ impl Terminal {
         Ok(())
     }
 
+    pub fn color_scheme(&self) -> Option<ColorScheme> {
+        self.callback_state.color_scheme
+    }
+
     pub fn set_color_scheme(&mut self, color_scheme: Option<ColorScheme>) -> Option<ColorScheme> {
         mem::replace(&mut self.callback_state.color_scheme, color_scheme)
     }
