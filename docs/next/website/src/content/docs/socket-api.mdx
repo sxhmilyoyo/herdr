@@ -164,6 +164,17 @@ back to its pane menu. Right-clicking the pane frame always opens Herdr's menu.
 `pane.split` accepts the same optional `right_click` value for the newly created
 pane.
 
+`pane.split`, `tab.create`, `workspace.create`, `worktree.create`, and
+`worktree.open` accept an optional `caller_pane_id`: a public pane id or live
+agent name recorded as the created pane's parent. Pane and agent records then
+carry `parent_pane_id` while that parent pane is open. The link is pane-scoped
+and follows panes across tab and workspace moves; when a parent closes, its
+children are promoted to the nearest open ancestor and each promoted pane emits
+`pane.updated`. An unknown `caller_pane_id` records no parent and does not fail
+the request. Servers that support the field advertise the `pane_parent`
+capability; clients must omit it otherwise, because an older server would
+ignore it silently.
+
 `PaneInfo` includes `scroll` when terminal scroll metrics are available:
 
 ```json
@@ -361,7 +372,7 @@ Remove a linked checkout:
 {"id":"req_3","method":"worktree.remove","params":{"workspace_id":"2","force":false}}
 ```
 
-Use at most one of `workspace_id` or `cwd` for `worktree.list`, `worktree.create`, and `worktree.open`; omit both to use the active workspace. Use exactly one of `path` or `branch` for `worktree.open`. Raw socket `cwd` and `path` values must be absolute; the CLI expands relative `--cwd` and `--path` values before sending requests. Workspace responses include optional `worktree` provenance when a workspace belongs to a Herdr worktree group. Worktree commands can emit `workspace.updated` when an existing workspace gains or changes worktree provenance.
+Use at most one of `workspace_id` or `cwd` for `worktree.list`, `worktree.create`, and `worktree.open`; omit both to use the active workspace. `worktree.create` and `worktree.open` accept the same optional `caller_pane_id` as `workspace.create` for the root pane of a workspace they create. Use exactly one of `path` or `branch` for `worktree.open`. Raw socket `cwd` and `path` values must be absolute; the CLI expands relative `--cwd` and `--path` values before sending requests. Workspace responses include optional `worktree` provenance when a workspace belongs to a Herdr worktree group. Worktree commands can emit `workspace.updated` when an existing workspace gains or changes worktree provenance.
 
 Worktree commands also emit lifecycle events. `worktree.create` emits `workspace.created`, `tab.created`, `pane.created`, and `worktree.created`. `worktree.open` emits `worktree.opened`, and it also emits workspace/tab/pane creation events when it opens a new Herdr workspace. `worktree.remove` emits `worktree.removed`; if the linked workspace is still open, it also emits `workspace.closed`.
 
@@ -828,6 +839,7 @@ Pane event subscriptions include `pane.created`, `pane.updated`, `pane.closed`, 
 to this server. It does not move other clients' views, and its payload does not
 identify the client. Selecting an already-selected pane does not emit it again.
 Terminal-title changes can emit `pane.updated`, but spinner-only raw-title changes do not emit it when `terminal_title_stripped` is unchanged.
+`pane.updated` also reports a changed `parent_pane_id` when a pane's parent closes and the pane is promoted to the nearest open ancestor.
 `pane.scroll_changed` is scoped to one `pane_id` and emits `pane_id`,
 `workspace_id`, and the current `scroll` metrics whenever Herdr observes a
 changed scroll snapshot.

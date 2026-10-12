@@ -178,6 +178,7 @@ impl App {
                 self.state.remove_plugin_pane_records(plugin_pane_ids);
                 self.state.remove_unattached_terminal_ids(terminal_ids);
                 self.shutdown_detached_terminal_runtimes();
+                self.emit_pending_pane_parent_updates();
                 self.emit_event(EventEnvelope {
                     event: EventKind::TabClosed,
                     data: EventData::TabClosed {
@@ -522,6 +523,7 @@ impl App {
             self.state.remove_plugin_pane_records(plugin_pane_ids);
             self.state.remove_unattached_terminal_ids(terminal_ids);
             self.shutdown_detached_terminal_runtimes();
+            self.emit_pending_pane_parent_updates();
         }
     }
 }

@@ -692,6 +692,9 @@ pub enum AgentPanelSort {
     #[default]
     Spaces,
     Priority,
+    /// Server order with children nested under their parent pane; the client
+    /// builds the tree, so the server treats this like `Spaces`.
+    Tree,
 }
 
 #[derive(Debug, Clone)]
@@ -873,6 +876,12 @@ pub struct AppState {
     pub(crate) installed_plugins: InstalledPluginRegistry,
     /// Pane ids opened through the plugin pane API.
     pub(crate) plugin_panes: std::collections::HashMap<PaneId, PluginPaneRecord>,
+    /// Parent pane of each pane created from another pane's process, by raw id.
+    /// Entries are promoted to the nearest live ancestor when a parent closes.
+    pub(crate) pane_parents: std::collections::HashMap<PaneId, PaneId>,
+    /// Panes whose parent changed through promotion; the app layer emits
+    /// `pane.updated` for them and drains the list.
+    pub(crate) pending_pane_parent_updates: Vec<PaneId>,
     /// Session-modal terminal popup. This is intentionally outside workspace layouts.
     pub(crate) popup_pane: Option<PopupPaneState>,
     /// Recent plugin action/event command executions.
@@ -1112,6 +1121,8 @@ impl AppState {
                 crate::detect::manifest_update::ManifestUpdateStatus::default(),
             installed_plugins: std::collections::HashMap::new(),
             plugin_panes: std::collections::HashMap::new(),
+            pane_parents: std::collections::HashMap::new(),
+            pending_pane_parent_updates: Vec::new(),
             popup_pane: None,
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
@@ -1177,6 +1188,14 @@ impl AppState {
             assert!(
                 self.plugin_panes.is_empty(),
                 "empty app state must not keep plugin pane records"
+            );
+            assert!(
+                self.pane_parents.is_empty(),
+                "empty app state must not keep pane parent links"
+            );
+            assert!(
+                self.pending_pane_parent_updates.is_empty(),
+                "empty app state must not keep pending pane parent updates"
             );
             assert!(
                 self.pending_agent_notifications.is_empty(),
@@ -1303,6 +1322,7 @@ impl AppState {
         for &pane_id in self.plugin_panes.keys() {
             assert_live_pane(pane_id, "plugin pane record");
         }
+        self.assert_pane_parent_invariants_for_test();
     }
 
     pub fn insert_test_runtime(

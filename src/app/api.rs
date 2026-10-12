@@ -402,6 +402,7 @@ impl App {
         if let Some((ws_idx, tab_idx)) = pane_exit_layout_target {
             self.emit_layout_updated_event(ws_idx, tab_idx);
         }
+        self.emit_pending_pane_parent_updates();
 
         self.sync_toast_deadline(previous_toast);
         self.shutdown_detached_terminal_runtimes();

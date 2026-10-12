@@ -2028,6 +2028,9 @@ impl ClientShellState {
                             crate::config::AgentPanelSortConfig::Priority
                         }
                         crate::config::AgentPanelSortConfig::Priority => {
+                            crate::config::AgentPanelSortConfig::Tree
+                        }
+                        crate::config::AgentPanelSortConfig::Tree => {
                             crate::config::AgentPanelSortConfig::Spaces
                         }
                     };

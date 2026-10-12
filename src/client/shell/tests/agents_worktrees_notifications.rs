@@ -568,6 +568,7 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
     initial.panes.push(second);
     initial.agents = vec![
         ClientShellAgent {
+            parent_pane_id: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -584,6 +585,7 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
             focused: true,
         },
         ClientShellAgent {
+            parent_pane_id: None,
             pane_id: "pane_2".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -658,6 +660,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
     projected.panes.push(second_pane);
     projected.agents = vec![
         ClientShellAgent {
+            parent_pane_id: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -674,6 +677,7 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
             focused: true,
         },
         ClientShellAgent {
+            parent_pane_id: None,
             pane_id: "pane_2".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -797,6 +801,7 @@ fn muted_agent_sidebar_rows_do_not_stack_terminal_faint() {
     projected.tabs[0].label = "second".into();
     projected.tabs[0].custom_label = true;
     projected.agents = vec![ClientShellAgent {
+        parent_pane_id: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -864,6 +869,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
     projected.panes.push(third_pane);
     projected.agents = vec![
         ClientShellAgent {
+            parent_pane_id: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -880,6 +886,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
             focused: true,
         },
         ClientShellAgent {
+            parent_pane_id: None,
             pane_id: "pane_2".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -896,6 +903,7 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
             focused: false,
         },
         ClientShellAgent {
+            parent_pane_id: None,
             pane_id: "pane_3".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -970,6 +978,7 @@ fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
     ));
     let mut projected = snapshot();
     projected.agents.push(ClientShellAgent {
+        parent_pane_id: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -1535,6 +1544,7 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     let mut state = ClientShellState::new(config);
     let mut projected = snapshot();
     projected.agents.push(ClientShellAgent {
+        parent_pane_id: None,
         pane_id: "pane_2".into(),
         workspace_id: "ws_2".into(),
         tab_id: "tab_2".into(),
@@ -1681,4 +1691,241 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     assert!(repaint);
     assert!(state.visible_notification.is_none());
     assert_eq!(state.pending_notifications.len(), 1);
+}
+
+fn tree_agent(
+    pane_id: &str,
+    workspace_id: &str,
+    tab_id: &str,
+    name: &str,
+    parent_pane_id: Option<&str>,
+) -> ClientShellAgent {
+    ClientShellAgent {
+        parent_pane_id: parent_pane_id.map(str::to_owned),
+        pane_id: pane_id.into(),
+        workspace_id: workspace_id.into(),
+        tab_id: tab_id.into(),
+        name: Some(name.into()),
+        display_agent: None,
+        agent: Some("pi".into()),
+        title: None,
+        terminal_title: None,
+        terminal_title_stripped: None,
+        agent_status: AgentStatus::Idle,
+        state_change_seq: 1,
+        state_labels: Vec::new(),
+        tokens: Vec::new(),
+        focused: false,
+    }
+}
+
+fn frame_text(state: &mut ClientShellState) -> String {
+    let frame = state.compose(106, 40).expect("agent sidebar frame");
+    frame
+        .cells
+        .chunks(frame.width as usize)
+        .map(|row| {
+            row.iter()
+                .map(|cell| cell.symbol.as_str())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn tree_sort_config() -> Config {
+    let mut config = Config::default();
+    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Tree;
+    config.ui.sidebar.agents.rows = vec![vec![crate::config::AgentSidebarToken::Agent]];
+    config
+}
+
+#[test]
+fn tree_sort_nests_children_under_parents_across_workspaces() {
+    let mut projected = snapshot();
+    let mut second_workspace = projected.workspaces[0].clone();
+    second_workspace.workspace_id = "ws_2".into();
+    second_workspace.active_tab_id = "tab_2".into();
+    second_workspace.label = "second".into();
+    second_workspace.focused = false;
+    projected.workspaces.push(second_workspace);
+    let mut second_tab = projected.tabs[0].clone();
+    second_tab.tab_id = "tab_2".into();
+    second_tab.workspace_id = "ws_2".into();
+    second_tab.focused = false;
+    projected.tabs.push(second_tab);
+    for (pane_id, workspace_id, tab_id) in [
+        ("pane_2", "ws_1", "tab_1"),
+        ("pane_4", "ws_1", "tab_1"),
+        ("pane_5", "ws_1", "tab_1"),
+        ("pane_3", "ws_2", "tab_2"),
+    ] {
+        let mut pane = projected.panes[0].clone();
+        pane.pane_id = pane_id.into();
+        pane.workspace_id = workspace_id.into();
+        pane.tab_id = tab_id.into();
+        pane.focused = false;
+        projected.panes.push(pane);
+    }
+    // Server order: workspace one, then workspace two.
+    projected.agents = vec![
+        tree_agent("pane_1", "ws_1", "tab_1", "root", None),
+        tree_agent("pane_2", "ws_1", "tab_1", "child", Some("pane_1")),
+        tree_agent("pane_4", "ws_1", "tab_1", "orphan", Some("pane_missing")),
+        tree_agent("pane_5", "ws_1", "tab_1", "sibling", Some("pane_1")),
+        tree_agent("pane_3", "ws_2", "tab_2", "grandchild", Some("pane_2")),
+    ];
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tree_sort_config()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let text = frame_text(&mut state);
+
+    let order = state
+        .hits
+        .agents
+        .iter()
+        .map(|(_, pane_id)| pane_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        ["pane_1", "pane_2", "pane_3", "pane_5", "pane_4"],
+        "children follow their parent even from another workspace; frame: {text}"
+    );
+    assert!(text.contains("├─ child"), "frame: {text}");
+    assert!(text.contains("└─ grandchild"), "frame: {text}");
+    assert!(text.contains("└─ sibling"), "frame: {text}");
+    let orphan_line = text
+        .lines()
+        .find(|line| line.contains("orphan"))
+        .expect("orphan row");
+    assert!(
+        !orphan_line.contains('─'),
+        "a child of a pane without an agent renders as a root: {orphan_line}"
+    );
+    let root_line = text
+        .lines()
+        .find(|line| line.contains("root"))
+        .expect("root row");
+    assert!(
+        !root_line.contains('─'),
+        "roots carry no guide: {root_line}"
+    );
+    assert!(
+        text.contains("tree"),
+        "header shows the tree sort label; frame: {text}"
+    );
+
+    // Keyboard navigation follows the same visible order.
+    let ordered = crate::client::shell::agent_sidebar::ordered_agent_pane_ids(
+        state.snapshot.as_deref().expect("snapshot"),
+        crate::config::AgentPanelSortConfig::Tree,
+    );
+    assert_eq!(ordered, order);
+}
+
+#[test]
+fn tree_sort_clamps_indentation_at_the_render_depth_limit() {
+    let mut projected = snapshot();
+    let mut agents = Vec::new();
+    let mut parent: Option<String> = None;
+    for index in 1..=7 {
+        let pane_id = format!("pane_{index}");
+        if index > 1 {
+            let mut pane = projected.panes[0].clone();
+            pane.pane_id = pane_id.clone();
+            pane.focused = false;
+            projected.panes.push(pane);
+        }
+        agents.push(tree_agent(
+            &pane_id,
+            "ws_1",
+            "tab_1",
+            &format!("a{index}"),
+            parent.as_deref(),
+        ));
+        parent = Some(pane_id);
+    }
+    projected.agents = agents;
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tree_sort_config()));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let text = frame_text(&mut state);
+
+    let guide_column = |name: &str| {
+        let line = text
+            .lines()
+            .find(|line| line.contains(&format!("─ {name}")))
+            .unwrap_or_else(|| panic!("row for {name}; frame: {text}"));
+        line.find("└─").expect("guide glyph")
+    };
+    assert!(guide_column("a2") < guide_column("a3"));
+    assert!(guide_column("a3") < guide_column("a4"));
+    assert!(guide_column("a4") < guide_column("a5"));
+    assert_eq!(
+        guide_column("a5"),
+        guide_column("a6"),
+        "depth 5 and 6 share the clamp"
+    );
+    assert_eq!(
+        guide_column("a6"),
+        guide_column("a7"),
+        "depth 6 and 7 share the clamp"
+    );
+}
+
+#[test]
+fn tree_row_prefix_widths_follow_depth() {
+    use crate::client::shell::agent_sidebar::tree_row_prefix;
+    assert_eq!(tree_row_prefix(0, true, false), " ");
+    assert_eq!(tree_row_prefix(0, false, true), "   ");
+    assert_eq!(tree_row_prefix(1, true, false), " ├─ ");
+    assert_eq!(tree_row_prefix(1, true, true), " └─ ");
+    assert_eq!(tree_row_prefix(1, false, true), "     ");
+    assert_eq!(tree_row_prefix(2, true, true), "   └─ ");
+    assert_eq!(tree_row_prefix(2, false, false), "       ");
+}
+
+#[test]
+fn agent_sort_toggle_cycles_through_tree() {
+    let path = std::env::temp_dir().join(format!(
+        "herdr-shell-agent-sort-cycle-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    let mut projected = snapshot();
+    projected
+        .agents
+        .push(tree_agent("pane_1", "ws_1", "tab_1", "pi", None));
+    let config =
+        ClientShellConfig::from_config(&Config::default()).with_preferences_path(path.clone());
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+
+    let mut observed = Vec::new();
+    for _ in 0..3 {
+        state.compose(106, 30).expect("agent sidebar frame");
+        let toggle = state.hits.agent_sort_toggle;
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: toggle.x,
+            row: toggle.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+        observed.push(state.config.agent_panel_sort);
+    }
+    assert_eq!(
+        observed,
+        [
+            crate::config::AgentPanelSortConfig::Priority,
+            crate::config::AgentPanelSortConfig::Tree,
+            crate::config::AgentPanelSortConfig::Spaces,
+        ]
+    );
+    std::fs::remove_file(path).expect("remove agent sort preferences");
 }

@@ -118,6 +118,54 @@ pub fn restore_handoff(
     )
 }
 
+/// Resolve persisted parent links to the restored panes.
+///
+/// Both ends are matched through public pane ids, which are stable across
+/// restore, so no layout-order assumption is needed. Links whose parent pane
+/// is gone are dropped: pane ids are never reused, so they can never resolve.
+pub fn restored_pane_parents(
+    snapshot: &SessionSnapshot,
+    workspaces: &[Workspace],
+) -> HashMap<PaneId, PaneId> {
+    let mut by_public_id = HashMap::new();
+    for workspace in workspaces {
+        for (pane_id, number) in &workspace.public_pane_numbers {
+            by_public_id.insert(
+                crate::workspace::public_pane_id_for_number(&workspace.id, *number),
+                *pane_id,
+            );
+        }
+    }
+    let mut parents = HashMap::new();
+    for ws_snap in &snapshot.workspaces {
+        let Some(workspace_id) = ws_snap.id.as_deref() else {
+            continue;
+        };
+        for tab_snap in &ws_snap.tabs {
+            for (old_raw, pane) in &tab_snap.panes {
+                let Some(parent_public_id) = pane.parent_pane_id.as_deref() else {
+                    continue;
+                };
+                let Some(number) = ws_snap.public_pane_numbers.get(old_raw) else {
+                    continue;
+                };
+                let child_public_id =
+                    crate::workspace::public_pane_id_for_number(workspace_id, *number);
+                let (Some(child), Some(parent)) = (
+                    by_public_id.get(&child_public_id),
+                    by_public_id.get(parent_public_id),
+                ) else {
+                    continue;
+                };
+                if child != parent {
+                    parents.insert(*child, *parent);
+                }
+            }
+        }
+    }
+    parents
+}
+
 #[cfg(unix)]
 pub fn handoff_pane_aliases(
     snapshot: &SessionSnapshot,
@@ -1477,7 +1525,14 @@ mod tests {
                 Arc::new(RenderSignal::new()),
             );
             let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
-            let captured = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+            let captured = crate::persist::capture(
+                &workspaces,
+                &terminals,
+                &runtimes,
+                Some(0),
+                0,
+                &HashMap::new(),
+            );
             assert_eq!(
                 captured.workspaces.len(),
                 2,
@@ -1542,6 +1597,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            parent_pane_id: None,
                             cwd,
                             label: Some("reviewer".into()),
                             agent_name: Some("reviewer".into()),
@@ -1629,6 +1685,7 @@ mod tests {
                         (
                             10,
                             super::super::snapshot::PaneSnapshot {
+                                parent_pane_id: None,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -1641,6 +1698,7 @@ mod tests {
                         (
                             20,
                             super::super::snapshot::PaneSnapshot {
+                                parent_pane_id: None,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -1695,6 +1753,7 @@ mod tests {
             (
                 id.parse::<u32>().unwrap(),
                 super::super::snapshot::PaneSnapshot {
+                    parent_pane_id: None,
                     cwd: cwd.clone(),
                     label: None,
                     agent_name: None,
@@ -1706,6 +1765,7 @@ mod tests {
             )
         };
         let final_pane = super::super::snapshot::PaneSnapshot {
+            parent_pane_id: None,
             cwd: cwd.clone(),
             label: Some("planner".into()),
             agent_name: Some("planner".into()),
@@ -1858,6 +1918,7 @@ mod tests {
                     panes: HashMap::from([(
                         0,
                         super::super::snapshot::PaneSnapshot {
+                            parent_pane_id: None,
                             cwd,
                             label: None,
                             agent_name: None,
@@ -1985,7 +2046,14 @@ mod tests {
             );
             assert_eq!(terminal.state, state_before_handoff);
             let runtimes = crate::terminal::TerminalRuntimeRegistry::from(runtimes);
-            let snapshot = crate::persist::capture(&workspaces, &terminals, &runtimes, Some(0), 0);
+            let snapshot = crate::persist::capture(
+                &workspaces,
+                &terminals,
+                &runtimes,
+                Some(0),
+                0,
+                &HashMap::new(),
+            );
             let pane_id = workspaces[0].tabs[0].panes.keys().next().copied().unwrap();
             let runtime = runtimes.values().next().unwrap();
             runtime
@@ -2169,6 +2237,7 @@ mod tests {
         panes.insert(
             0,
             super::super::snapshot::PaneSnapshot {
+                parent_pane_id: None,
                 cwd: cwd.clone(),
                 label: None,
                 agent_name: None,

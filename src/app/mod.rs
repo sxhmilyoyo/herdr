@@ -19,6 +19,7 @@ mod creation;
 mod custom_commands;
 mod git_refresh;
 mod ids;
+mod pane_parents;
 mod popup;
 mod runtime;
 mod session;
@@ -212,6 +213,7 @@ fn agent_panel_sort_from_config(
     match sort {
         crate::config::AgentPanelSortConfig::Spaces => state::AgentPanelSort::Spaces,
         crate::config::AgentPanelSortConfig::Priority => state::AgentPanelSort::Priority,
+        crate::config::AgentPanelSortConfig::Tree => state::AgentPanelSort::Tree,
     }
 }
 
@@ -401,6 +403,7 @@ impl App {
         // Try to restore previous session
         let mut restored_terminals = std::collections::HashMap::new();
         let mut restored_terminal_runtimes = crate::terminal::TerminalRuntimeRegistry::new();
+        let mut restored_pane_parents = std::collections::HashMap::new();
         let snapshot = policy.restore_session.then(crate::persist::load).flatten();
         let mut plugin_installation_leases = crate::plugin_installations::Leases::new();
         let mut plugin_installation_cleanup_allowed = true;
@@ -443,6 +446,7 @@ impl App {
             );
             restored_terminals = terminals;
             restored_terminal_runtimes = terminal_runtimes.into();
+            restored_pane_parents = crate::persist::restored_pane_parents(&snap, &ws);
             if ws.is_empty() {
                 crate::logging::session_restored(0, "empty");
                 (Vec::new(), None, 0)
@@ -567,6 +571,8 @@ impl App {
                 &mut plugin_installation_leases,
             ),
             plugin_panes: std::collections::HashMap::new(),
+            pane_parents: restored_pane_parents,
+            pending_pane_parent_updates: Vec::new(),
             popup_pane: None,
             plugin_command_logs: Vec::new(),
             next_plugin_command_log_id: 1,
@@ -725,6 +731,7 @@ impl App {
         let pane_id_aliases = crate::persist::handoff_pane_aliases(snapshot, &workspaces);
 
         app.state.pane_id_aliases = pane_id_aliases;
+        app.state.pane_parents = crate::persist::restored_pane_parents(snapshot, &workspaces);
         app.state.workspaces = workspaces;
         app.state.terminals = terminals;
         app.terminal_runtimes = runtimes.into();
@@ -2744,6 +2751,7 @@ mod tests {
         let response = app.handle_api_request(crate::api::schema::Request {
             id: "req_pane_split_focus_background_tab".into(),
             method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
+                caller_pane_id: None,
                 workspace_id: None,
                 target_pane_id: Some(target_pane_id),
                 direction: crate::api::schema::SplitDirection::Right,
@@ -2791,6 +2799,7 @@ mod tests {
         let response = app.handle_api_request(crate::api::schema::Request {
             id: "req_pane_split_ratio".into(),
             method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
+                caller_pane_id: None,
                 workspace_id: None,
                 target_pane_id: Some(target_pane_id),
                 direction: crate::api::schema::SplitDirection::Right,
@@ -2881,6 +2890,7 @@ mod tests {
                 id: "req_hidden_split_size".into(),
                 method: crate::api::schema::Method::PaneSplit(
                     crate::api::schema::PaneSplitParams {
+                        caller_pane_id: None,
                         workspace_id: None,
                         target_pane_id: Some(app.pane_info(ws_idx, root).unwrap().pane_id),
                         direction: crate::api::schema::SplitDirection::Down,
@@ -2923,6 +2933,7 @@ mod tests {
         let response = app.handle_api_request(crate::api::schema::Request {
             id: "req_pane_split_current".into(),
             method: crate::api::schema::Method::PaneSplit(crate::api::schema::PaneSplitParams {
+                caller_pane_id: None,
                 workspace_id: None,
                 target_pane_id: None,
                 direction: crate::api::schema::SplitDirection::Right,

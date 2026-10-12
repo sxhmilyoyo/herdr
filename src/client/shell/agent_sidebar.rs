@@ -9,18 +9,49 @@ use ratatui::{
 };
 
 use super::*;
+use crate::protocol::ClientShellAgent;
 
 pub(super) struct AgentRow {
     pub(super) pane_id: String,
     pub(super) status: crate::api::schema::AgentStatus,
     pub(super) focused: bool,
     pub(super) rows: Vec<Vec<crate::ui::ResolvedToken>>,
+    /// Nesting depth in the agent tree; zero outside the `tree` sort.
+    pub(super) depth: u8,
+    /// Whether this entry is the last child of its parent (picks `└─` over `├─`).
+    pub(super) last_sibling: bool,
+}
+
+/// Deeper entries share this indentation so narrow sidebars stay readable.
+pub(super) const MAX_TREE_RENDER_DEPTH: u8 = 4;
+
+/// One agent in display order, with its place in the agent tree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OrderedAgent {
+    pub(super) pane_id: String,
+    pub(super) depth: u8,
+    pub(super) last_sibling: bool,
 }
 
 pub(super) fn ordered_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
     sort: crate::config::AgentPanelSortConfig,
 ) -> Vec<String> {
+    ordered_agent_entries(snapshot, sort)
+        .into_iter()
+        .map(|entry| entry.pane_id)
+        .collect()
+}
+
+pub(super) fn ordered_agent_entries(
+    snapshot: &ClientShellSnapshot,
+    sort: crate::config::AgentPanelSortConfig,
+) -> Vec<OrderedAgent> {
+    let flat = |pane_id: &str| OrderedAgent {
+        pane_id: pane_id.to_owned(),
+        depth: 0,
+        last_sibling: false,
+    };
     if snapshot.agent_view_label.is_some() {
         return snapshot
             .agent_order
@@ -31,22 +62,97 @@ pub(super) fn ordered_agent_pane_ids(
                     .iter()
                     .any(|agent| agent.pane_id == pane_id.as_str())
             })
-            .cloned()
+            .map(|pane_id| flat(pane_id))
             .collect();
     }
-    let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
-    if sort == crate::config::AgentPanelSortConfig::Priority {
-        agents.sort_by_key(|agent| {
-            (
-                std::cmp::Reverse(status_priority(agent.agent_status)),
-                std::cmp::Reverse(agent.state_change_seq),
-            )
-        });
+    match sort {
+        crate::config::AgentPanelSortConfig::Tree => agent_tree_entries(&snapshot.agents),
+        crate::config::AgentPanelSortConfig::Priority => {
+            let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
+            agents.sort_by_key(|agent| {
+                (
+                    std::cmp::Reverse(status_priority(agent.agent_status)),
+                    std::cmp::Reverse(agent.state_change_seq),
+                )
+            });
+            agents
+                .into_iter()
+                .map(|agent| flat(&agent.pane_id))
+                .collect()
+        }
+        crate::config::AgentPanelSortConfig::Spaces => snapshot
+            .agents
+            .iter()
+            .map(|agent| flat(&agent.pane_id))
+            .collect(),
     }
-    agents
-        .into_iter()
-        .map(|agent| agent.pane_id.clone())
-        .collect()
+}
+
+/// Nest agents under their parent pane, keeping server order among roots and
+/// among siblings. A parent that is not itself a listed agent makes its
+/// children roots; the server forbids cycles, but a stale snapshot must not
+/// hang the client, so every agent is emitted exactly once.
+fn agent_tree_entries(agents: &[ClientShellAgent]) -> Vec<OrderedAgent> {
+    let listed = agents
+        .iter()
+        .map(|agent| agent.pane_id.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    let mut children: HashMap<&str, Vec<&ClientShellAgent>> = HashMap::new();
+    let mut roots = Vec::new();
+    for agent in agents {
+        match agent
+            .parent_pane_id
+            .as_deref()
+            .filter(|parent| *parent != agent.pane_id && listed.contains(parent))
+        {
+            Some(parent) => children.entry(parent).or_default().push(agent),
+            None => roots.push(agent),
+        }
+    }
+
+    fn visit<'a>(
+        agent: &'a ClientShellAgent,
+        depth: u8,
+        last_sibling: bool,
+        children: &HashMap<&str, Vec<&'a ClientShellAgent>>,
+        visited: &mut std::collections::HashSet<&'a str>,
+        out: &mut Vec<OrderedAgent>,
+    ) {
+        if !visited.insert(agent.pane_id.as_str()) {
+            return;
+        }
+        out.push(OrderedAgent {
+            pane_id: agent.pane_id.clone(),
+            depth,
+            last_sibling,
+        });
+        if let Some(kids) = children.get(agent.pane_id.as_str()) {
+            let count = kids.len();
+            for (index, kid) in kids.iter().enumerate() {
+                visit(
+                    kid,
+                    depth.saturating_add(1),
+                    index + 1 == count,
+                    children,
+                    visited,
+                    out,
+                );
+            }
+        }
+    }
+
+    let mut visited = std::collections::HashSet::new();
+    let mut out = Vec::with_capacity(agents.len());
+    for root in &roots {
+        visit(root, 0, false, &children, &mut visited, &mut out);
+    }
+    for agent in agents {
+        if !visited.contains(agent.pane_id.as_str()) {
+            // Only reachable through a parent cycle; show it as a root.
+            visit(agent, 0, false, &children, &mut visited, &mut out);
+        }
+    }
+    out
 }
 
 pub(super) fn render_agent_panel(
@@ -121,6 +227,7 @@ pub(super) fn render_agent_panel_header(
     let sort_label = agent_view_label.unwrap_or(match config.agent_panel_sort {
         crate::config::AgentPanelSortConfig::Spaces => "grouped",
         crate::config::AgentPanelSortConfig::Priority => "priority",
+        crate::config::AgentPanelSortConfig::Tree => "tree",
     });
     let sort_width = display_width(sort_label).min(area.width as usize) as u16;
     let sort_rect = Rect::new(
@@ -239,9 +346,14 @@ pub(super) fn agent_rows(
     config: &ClientShellConfig,
     machine: Option<&str>,
 ) -> Vec<AgentRow> {
-    ordered_agent_pane_ids(snapshot, config.agent_panel_sort)
+    ordered_agent_entries(snapshot, config.agent_panel_sort)
         .into_iter()
-        .filter_map(|pane_id| agent_row(snapshot, &pane_id, config, machine))
+        .filter_map(|entry| {
+            let mut row = agent_row(snapshot, &entry.pane_id, config, machine)?;
+            row.depth = entry.depth;
+            row.last_sibling = entry.last_sibling;
+            Some(row)
+        })
         .collect()
 }
 
@@ -315,6 +427,8 @@ pub(super) fn agent_row(
         status: agent.agent_status,
         focused: agent.focused,
         rows,
+        depth: 0,
+        last_sibling: false,
     })
 }
 
@@ -353,9 +467,14 @@ pub(super) fn render_agent_row(
     } else {
         row.rows.clone()
     };
+    let depth = usize::from(row.depth.min(MAX_TREE_RENDER_DEPTH));
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
-        let indent = if index == 0 { 1 } else { 3 };
-        let mut spans = vec![ratatui::text::Span::raw(" ".repeat(indent))];
+        let prefix = tree_row_prefix(depth, index == 0, row.last_sibling);
+        let indent = display_width(&prefix);
+        let mut spans = vec![ratatui::text::Span::styled(
+            prefix,
+            Style::default().fg(palette.overlay0),
+        )];
         spans.extend(crate::ui::resolved_token_spans(
             tokens,
             icon,
@@ -370,6 +489,23 @@ pub(super) fn render_agent_row(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
         );
+    }
+}
+
+/// Leading cells for one line of an agent entry: roots keep the flat layout
+/// (1 column, then 3 for continuation lines); each tree level adds 2 columns,
+/// and the first line of a child carries the same `├─`/`└─` guide the Spaces
+/// panel uses for worktrees.
+pub(super) fn tree_row_prefix(depth: usize, first_line: bool, last_sibling: bool) -> String {
+    match (depth, first_line) {
+        (0, true) => " ".to_owned(),
+        (0, false) => "   ".to_owned(),
+        (depth, true) => format!(
+            "{}{} ",
+            " ".repeat(2 * depth - 1),
+            if last_sibling { "└─" } else { "├─" }
+        ),
+        (depth, false) => " ".repeat(3 + 2 * depth),
     }
 }
 

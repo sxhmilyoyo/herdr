@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -1064,6 +1064,10 @@ pub struct ClientShellPane {
     pub foreground_cwd: Option<String>,
     pub focused: bool,
     pub right_click_passthrough: bool,
+    /// Pane this pane was created from, while that pane is open. Carried as a
+    /// plain `Option` because this struct is also bincode-encoded.
+    #[serde(default)]
+    pub parent_pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1083,6 +1087,9 @@ pub struct ClientShellAgent {
     pub state_labels: Vec<(String, String)>,
     pub tokens: Vec<(String, String)>,
     pub focused: bool,
+    /// Pane this agent's pane was created from, while that pane is open.
+    #[serde(default)]
+    pub parent_pane_id: Option<String>,
 }
 
 /// Origin-relative geometry for one pane in a rendered pane surface.
@@ -2842,6 +2849,7 @@ mod tests {
                 agent_status: crate::api::schema::AgentStatus::Idle,
             }],
             panes: vec![ClientShellPane {
+                parent_pane_id: None,
                 pane_id: "w1:p1".into(),
                 workspace_id: "w1".into(),
                 tab_id: "w1:t1".into(),

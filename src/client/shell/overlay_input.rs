@@ -942,6 +942,7 @@ impl ClientShellState {
                 suggested_name,
             } => Some(crate::api::schema::Method::WorkspaceCreate(
                 crate::api::schema::WorkspaceCreateParams {
+                    caller_pane_id: None,
                     source_workspace_id,
                     cwd,
                     focus: true,
@@ -963,6 +964,7 @@ impl ClientShellState {
                 default_name,
             } => Some(crate::api::schema::Method::TabCreate(
                 crate::api::schema::TabCreateParams {
+                    caller_pane_id: None,
                     workspace_id: Some(workspace_id),
                     cwd: None,
                     focus: true,

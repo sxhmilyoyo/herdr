@@ -120,6 +120,8 @@ A blocked agent makes its pane, tab, and workspace look blocked. A working agent
 
 This is the main Herdr workflow: start several agents, let them work in parallel, and use the sidebar to see which project needs a decision, which one is still running, and which one is ready to review.
 
+Agents that create other agents form a tree. When a process inside a pane runs `herdr pane split`, `tab create`, `workspace create`, `worktree create`, or `worktree open`, the new pane records the calling pane as its parent; `--parent ID` picks another pane or live agent name, and `--no-parent` records none. Set `ui.agent_panel_sort = "tree"` (or click the sort label in the Agents panel header) to nest each agent under the agent that created it, across tabs and workspaces, with the same `├─` and `└─` guides the Spaces panel uses for worktrees. Roots and siblings keep their usual order. A child whose parent pane hosts no agent is shown at the top level until an agent starts there again, and when a parent pane closes its children move up to the nearest open ancestor. The other sort modes stay flat.
+
 ## Custom agent labels
 
 You can rename an agent target for display:

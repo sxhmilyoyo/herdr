@@ -111,6 +111,9 @@ pub struct PaneSnapshot {
     pub agent_resume: Option<PaneAgentResumeSnapshot>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launch_argv: Option<Vec<String>>,
+    /// Public id of the pane this pane was created from, when still open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,12 +272,15 @@ pub fn capture(
     terminal_runtimes: &TerminalRuntimeRegistry,
     active: Option<usize>,
     selected: usize,
+    pane_parents: &HashMap<crate::layout::PaneId, String>,
 ) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
         workspaces: workspaces
             .iter()
-            .map(|workspace| capture_workspace(workspace, terminals, terminal_runtimes))
+            .map(|workspace| {
+                capture_workspace(workspace, terminals, terminal_runtimes, pane_parents)
+            })
             .collect(),
         active,
         selected,
@@ -291,11 +297,12 @@ fn capture_workspace(
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    pane_parents: &HashMap<crate::layout::PaneId, String>,
 ) -> WorkspaceSnapshot {
     let tabs: Vec<_> = ws
         .tabs
         .iter()
-        .map(|tab| capture_tab(tab, terminals, terminal_runtimes))
+        .map(|tab| capture_tab(tab, terminals, terminal_runtimes, pane_parents))
         .collect();
     let identity_cwd = tabs
         .first()
@@ -327,6 +334,7 @@ fn capture_tab(
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
+    pane_parents: &HashMap<crate::layout::PaneId, String>,
 ) -> TabSnapshot {
     let mut panes = HashMap::new();
     for id in tab.panes.keys() {
@@ -388,6 +396,7 @@ fn capture_tab(
                 agent_session,
                 agent_resume,
                 launch_argv,
+                parent_pane_id: pane_parents.get(id).cloned(),
             },
         );
     }
@@ -561,6 +570,53 @@ mod tests {
         state
     }
 
+    #[test]
+    fn pane_parents_round_trip_through_public_ids() {
+        let mut state = state_with_workspaces(&["alpha", "beta"]);
+        let alpha_root = state.workspaces[0].focused_pane_id().unwrap();
+        let child = state.workspaces[0].test_split(Direction::Horizontal);
+        let beta_root = state.workspaces[1].focused_pane_id().unwrap();
+        state.ensure_test_terminals();
+        assert!(state.set_pane_parent(child, alpha_root));
+        // A link may cross workspaces.
+        assert!(state.set_pane_parent(beta_root, child));
+
+        let snapshot = capture_from_state(&state);
+        let alpha_root_public = state.public_pane_id_anywhere(alpha_root).unwrap();
+        let child_public = state.public_pane_id_anywhere(child).unwrap();
+        let persisted_child = &snapshot.workspaces[0].tabs[0].panes[&child.raw()];
+        assert_eq!(
+            persisted_child.parent_pane_id.as_deref(),
+            Some(alpha_root_public.as_str())
+        );
+        let persisted_beta_root = &snapshot.workspaces[1].tabs[0].panes[&beta_root.raw()];
+        assert_eq!(
+            persisted_beta_root.parent_pane_id.as_deref(),
+            Some(child_public.as_str())
+        );
+        assert!(snapshot.workspaces[0].tabs[0].panes[&alpha_root.raw()]
+            .parent_pane_id
+            .is_none());
+
+        // Public ids are the stable key, so the same workspaces stand in for
+        // the restored ones.
+        let restored = crate::persist::restored_pane_parents(&snapshot, &state.workspaces);
+        assert_eq!(restored.get(&child), Some(&alpha_root));
+        assert_eq!(restored.get(&beta_root), Some(&child));
+        assert_eq!(restored.len(), 2);
+
+        // A parent that no longer exists is dropped; other links survive.
+        let mut dangling = snapshot;
+        dangling.workspaces[0].tabs[0]
+            .panes
+            .get_mut(&child.raw())
+            .unwrap()
+            .parent_pane_id = Some(format!("{}:p99", state.workspaces[0].id));
+        let restored = crate::persist::restored_pane_parents(&dangling, &state.workspaces);
+        assert!(!restored.contains_key(&child));
+        assert_eq!(restored.get(&beta_root), Some(&child));
+    }
+
     fn capture_from_state(state: &AppState) -> SessionSnapshot {
         let terminal_runtimes = TerminalRuntimeRegistry::new();
         capture_from_state_with_runtimes(state, &terminal_runtimes)
@@ -576,6 +632,7 @@ mod tests {
             terminal_runtimes,
             state.active,
             state.selected,
+            &state.pane_parent_public_ids(),
         )
     }
 
@@ -700,6 +757,7 @@ mod tests {
         panes.insert(
             0,
             PaneSnapshot {
+                parent_pane_id: None,
                 cwd: PathBuf::from("/home/can/Projects/herdr"),
                 label: None,
                 agent_name: None,
@@ -712,6 +770,7 @@ mod tests {
         panes.insert(
             1,
             PaneSnapshot {
+                parent_pane_id: None,
                 cwd: PathBuf::from("/home/can/Projects/website"),
                 label: Some("website".into()),
                 agent_name: None,
@@ -1398,6 +1457,7 @@ mod tests {
         panes.insert(
             0,
             PaneSnapshot {
+                parent_pane_id: None,
                 cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test"),
                 label: None,
                 agent_name: None,
@@ -1410,6 +1470,7 @@ mod tests {
         panes.insert(
             1,
             PaneSnapshot {
+                parent_pane_id: None,
                 cwd: std::env::var("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| PathBuf::from("/tmp")),

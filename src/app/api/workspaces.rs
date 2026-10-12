@@ -65,8 +65,10 @@ impl App {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
         };
+        let parent_pane = self.parent_pane_from_caller(params.caller_pane_id.as_deref());
         match self.create_workspace_with_launch_env(cwd, params.focus, extra_env) {
             Ok(index) => {
+                self.adopt_new_pane(self.state.workspaces[index].tabs[0].root_pane, parent_pane);
                 if let Some(label) = params.label {
                     if let Some(workspace) = self.state.workspaces.get_mut(index) {
                         workspace.set_custom_name(label);
@@ -355,6 +357,7 @@ impl App {
                 },
             });
         }
+        self.emit_pending_pane_parent_updates();
 
         encode_success(id, ResponseResult::Ok {})
     }
@@ -413,6 +416,7 @@ mod tests {
         let response = app.handle_tab_create(
             "tab".into(),
             crate::api::schema::TabCreateParams {
+                caller_pane_id: None,
                 workspace_id: None,
                 cwd: None,
                 focus: true,
@@ -443,6 +447,7 @@ mod tests {
         let response = app.handle_workspace_create(
             "req".into(),
             WorkspaceCreateParams {
+                caller_pane_id: None,
                 source_workspace_id: None,
                 cwd: None,
                 focus: false,
@@ -504,6 +509,7 @@ mod tests {
         let response = app.handle_workspace_create(
             "req".into(),
             WorkspaceCreateParams {
+                caller_pane_id: None,
                 source_workspace_id: Some(source_workspace_id),
                 cwd: None,
                 focus: false,
@@ -524,6 +530,7 @@ mod tests {
         let invalid = app.handle_workspace_create(
             "invalid".into(),
             WorkspaceCreateParams {
+                caller_pane_id: None,
                 source_workspace_id: Some("w_999".into()),
                 cwd: None,
                 focus: false,
@@ -537,6 +544,7 @@ mod tests {
         let captured = app.handle_workspace_create(
             "captured".into(),
             WorkspaceCreateParams {
+                caller_pane_id: None,
                 source_workspace_id: Some("w_999".into()),
                 cwd: Some(source_cwd.display().to_string()),
                 focus: false,

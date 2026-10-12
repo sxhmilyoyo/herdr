@@ -1433,6 +1433,7 @@ fn notification_successor_replay_rejects_a_restarted_destination() {
         state.shell = Some(shell);
         let mut snapshot = test_snapshot(destination_boot, 2);
         snapshot.panes.push(crate::protocol::ClientShellPane {
+            parent_pane_id: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -1550,6 +1551,7 @@ fn notification_click_on_remote_source_supersedes_a_handoff() {
     let remote = endpoint();
     let mut snapshot = test_snapshot("remote-boot", 2);
     snapshot.panes.push(crate::protocol::ClientShellPane {
+        parent_pane_id: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),

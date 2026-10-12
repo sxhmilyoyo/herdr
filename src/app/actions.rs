@@ -658,9 +658,10 @@ impl AppState {
         {
             self.previous_pane_focus = None;
         }
-        for pane_id in pane_ids {
-            self.plugin_panes.remove(&pane_id);
+        for pane_id in &pane_ids {
+            self.plugin_panes.remove(pane_id);
         }
+        self.retire_pane_parents(pane_ids);
     }
 
     pub fn close_selected_workspace(&mut self) {

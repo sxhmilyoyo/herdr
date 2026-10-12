@@ -232,6 +232,52 @@ mod tests {
         }
     }
 
+    /// Optional request fields added after generation 1 was frozen, with the
+    /// `ServerCapabilities` flag that advertises each one. Clients omit a gated
+    /// field unless the server advertises its capability, so the frozen shape
+    /// stays authoritative for generation-1 peers and the digest excludes it.
+    const GATED_METHOD_FIELDS: &[(&str, &str, &str)] = &[
+        ("pane.split", "caller_pane_id", "pane_parent"),
+        ("tab.create", "caller_pane_id", "pane_parent"),
+        ("workspace.create", "caller_pane_id", "pane_parent"),
+        ("worktree.create", "caller_pane_id", "pane_parent"),
+        ("worktree.open", "caller_pane_id", "pane_parent"),
+    ];
+
+    fn strip_gated_fields(method: &str, value: &mut serde_json::Value) {
+        let gated = GATED_METHOD_FIELDS
+            .iter()
+            .filter(|(gated_method, _, _)| *gated_method == method)
+            .map(|(_, field, _)| *field)
+            .collect::<Vec<_>>();
+        if gated.is_empty() {
+            return;
+        }
+        fn strip(value: &mut serde_json::Value, gated: &[&str]) {
+            match value {
+                serde_json::Value::Object(object) => {
+                    if let Some(serde_json::Value::Object(properties)) =
+                        object.get_mut("properties")
+                    {
+                        for field in gated {
+                            properties.remove(*field);
+                        }
+                    }
+                    for child in object.values_mut() {
+                        strip(child, gated);
+                    }
+                }
+                serde_json::Value::Array(values) => {
+                    for child in values {
+                        strip(child, gated);
+                    }
+                }
+                _ => {}
+            }
+        }
+        strip(value, &gated);
+    }
+
     fn endpoint_method_shape_digests() -> BTreeMap<String, String> {
         let schema = serde_json::to_value(schemars::schema_for!(crate::api::schema::Request))
             .expect("request schema");
@@ -269,15 +315,59 @@ mod tests {
                 collect_schema_refs(definition, &mut referenced_names);
                 selected_definitions.insert(name, normalized_wire_schema(definition));
             }
-            let shape = serde_json::json!({
+            let mut shape = serde_json::json!({
                 "request": normalized_wire_schema(branch),
                 "definitions": selected_definitions,
             });
+            strip_gated_fields(method, &mut shape);
             let bytes = serde_json::to_vec(&shape).expect("method shape json");
             digests.insert(method.to_string(), format!("{:x}", Sha256::digest(bytes)));
         }
 
         digests
+    }
+
+    #[test]
+    fn gated_method_fields_are_optional_and_advertised() {
+        let request_schema =
+            serde_json::to_value(schemars::schema_for!(crate::api::schema::Request))
+                .expect("request schema");
+        let definitions = request_schema
+            .get("$defs")
+            .and_then(serde_json::Value::as_object)
+            .expect("request definitions");
+        let capabilities = serde_json::to_value(schemars::schema_for!(
+            crate::api::schema::ServerCapabilities
+        ))
+        .expect("capabilities schema");
+        for (method, field, capability) in GATED_METHOD_FIELDS {
+            assert!(
+                CLIENT_SHELL_METHODS.contains(method),
+                "gated field {field} names unknown method {method}"
+            );
+            let property = definitions.values().find_map(|definition| {
+                definition
+                    .pointer(&format!("/properties/{field}"))
+                    .filter(|_| {
+                        definition
+                            .pointer("/required")
+                            .and_then(serde_json::Value::as_array)
+                            .is_none_or(|required| {
+                                !required.iter().any(|name| name.as_str() == Some(field))
+                            })
+                    })
+            });
+            assert!(
+                property.is_some(),
+                "gated field {field} for {method} must exist as an optional property"
+            );
+            assert!(
+                capabilities
+                    .pointer(&format!("/properties/{capability}"))
+                    .is_some(),
+                "gated field {field} for {method} names unknown capability {capability}"
+            );
+        }
     }
 
     #[test]

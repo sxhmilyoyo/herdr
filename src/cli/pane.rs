@@ -615,12 +615,26 @@ fn parse_right_click_target(value: &str) -> Result<PaneRightClickTarget, String>
 }
 
 fn pane_split(args: &[String]) -> std::io::Result<i32> {
+    let (args, parent) = match super::lineage::take_parent_flags(args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
     let env_pane_id = super::target::caller_pane_id();
-    let params = match parse_pane_split_args(args, env_pane_id.as_deref()) {
+    let mut params = match parse_pane_split_args(&args, env_pane_id.as_deref()) {
         Ok(params) => params,
         Err(message) => {
             eprintln!("{message}");
             return Ok(2);
+        }
+    };
+    params.caller_pane_id = match super::lineage::caller_pane_for_request(&parent) {
+        Ok(caller_pane_id) => caller_pane_id,
+        Err(err) => {
+            eprintln!("{err}");
+            return Ok(1);
         }
     };
 
@@ -722,12 +736,13 @@ fn parse_pane_split_args(
 
     let Some(direction) = direction else {
         return Err(
-            "usage: herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--cwd PATH] [--env KEY=VALUE] [--right-click herdr|pane] [--focus] [--no-focus]"
+            "usage: herdr pane split [<pane_id>|--pane ID|--current] --direction right|down [--ratio FLOAT] [--cwd PATH] [--env KEY=VALUE] [--right-click herdr|pane] [--focus] [--no-focus] [--parent ID|--no-parent]"
                 .into(),
         );
     };
 
     Ok(PaneSplitParams {
+        caller_pane_id: None,
         workspace_id: None,
         target_pane_id: pane_id,
         direction,
