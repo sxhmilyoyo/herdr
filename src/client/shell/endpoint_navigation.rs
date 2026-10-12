@@ -171,6 +171,7 @@ impl ClientShellState {
                 &self.endpoints,
                 &self.active_endpoint_id,
                 self.config.agent_panel_sort,
+                self.agent_collapse(),
             );
             if agents.is_empty() {
                 return true;

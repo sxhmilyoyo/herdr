@@ -27,27 +27,52 @@ impl ClientShellState {
     }
 
     pub(super) fn persist_chrome_preferences(&mut self, outcome: &mut ClientShellInput) {
+        self.prune_collapsed_agent_subtrees();
         let Some(path) = self.config.preferences_path.as_deref() else {
             return;
         };
-        let mut collapsed_groups = self.collapsed_groups.iter().cloned().collect::<Vec<_>>();
-        collapsed_groups.sort();
-        let mut remote_collapsed_groups = self
+        let sorted = |set: &HashSet<String>| {
+            let mut values = set.iter().cloned().collect::<Vec<_>>();
+            values.sort();
+            values
+        };
+        let collapsed_groups = sorted(&self.collapsed_groups);
+        let collapsed_agent_subtrees = sorted(&self.collapsed_agent_subtrees);
+        let mut remote_profiles = self
             .remote_collapsed_groups
-            .iter()
-            .filter_map(|(endpoint_id, groups)| {
-                let ClientEndpointId::Ssh(profile_id) = endpoint_id else {
-                    return None;
-                };
-                let mut collapsed_groups = groups.iter().cloned().collect::<Vec<_>>();
-                collapsed_groups.sort();
-                (!collapsed_groups.is_empty()).then(|| preferences::ClientRemoteCollapsedGroups {
-                    profile_id: profile_id.to_string(),
-                    collapsed_groups,
-                })
+            .keys()
+            .chain(self.remote_collapsed_agent_subtrees.keys())
+            .filter_map(|endpoint_id| match endpoint_id {
+                ClientEndpointId::Ssh(profile_id) => {
+                    Some((endpoint_id.clone(), profile_id.to_string()))
+                }
+                _ => None,
             })
             .collect::<Vec<_>>();
-        remote_collapsed_groups.sort_by(|left, right| left.profile_id.cmp(&right.profile_id));
+        remote_profiles.sort_by(|left, right| left.1.cmp(&right.1));
+        remote_profiles.dedup_by(|left, right| left.1 == right.1);
+        let remote_collapsed_groups = remote_profiles
+            .into_iter()
+            .filter_map(|(endpoint_id, profile_id)| {
+                let collapsed_groups = self
+                    .remote_collapsed_groups
+                    .get(&endpoint_id)
+                    .map(&sorted)
+                    .unwrap_or_default();
+                let collapsed_agent_subtrees = self
+                    .remote_collapsed_agent_subtrees
+                    .get(&endpoint_id)
+                    .map(&sorted)
+                    .unwrap_or_default();
+                (!collapsed_groups.is_empty() || !collapsed_agent_subtrees.is_empty()).then_some(
+                    preferences::ClientRemoteCollapsedGroups {
+                        profile_id,
+                        collapsed_groups,
+                        collapsed_agent_subtrees,
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
         let preferences = preferences::ClientChromePreferences {
             sidebar_width: self.sidebar_width_manual.then_some(self.sidebar_width),
             sidebar_section_split: self
@@ -61,6 +86,7 @@ impl ClientShellState {
                 .then_some(self.config.agent_panel_sort),
             collapsed_groups,
             remote_collapsed_groups,
+            collapsed_agent_subtrees,
         };
         if let Err(error) = preferences::store(path, preferences) {
             self.set_endpoint_error(error);

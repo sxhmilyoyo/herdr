@@ -1820,6 +1820,7 @@ fn tree_sort_nests_children_under_parents_across_workspaces() {
     let ordered = crate::client::shell::agent_sidebar::ordered_agent_pane_ids(
         state.snapshot.as_deref().expect("snapshot"),
         crate::config::AgentPanelSortConfig::Tree,
+        &std::collections::HashSet::new(),
     );
     assert_eq!(ordered, order);
 }
@@ -1928,4 +1929,211 @@ fn agent_sort_toggle_cycles_through_tree() {
         ]
     );
     std::fs::remove_file(path).expect("remove agent sort preferences");
+}
+
+fn click(state: &mut ClientShellState, rect: Rect) -> ClientShellInput {
+    state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: rect.x,
+        row: rect.y,
+        modifiers: KeyModifiers::empty(),
+    })])
+}
+
+fn tree_snapshot_with_blocked_child() -> ClientShellSnapshot {
+    let mut projected = snapshot();
+    for pane_id in ["pane_2", "pane_3", "pane_4"] {
+        let mut pane = projected.panes[0].clone();
+        pane.pane_id = pane_id.into();
+        pane.focused = false;
+        projected.panes.push(pane);
+    }
+    let mut child = tree_agent("pane_2", "ws_1", "tab_1", "child", Some("pane_1"));
+    child.agent_status = AgentStatus::Blocked;
+    projected.agents = vec![
+        tree_agent("pane_1", "ws_1", "tab_1", "root", None),
+        child,
+        tree_agent("pane_3", "ws_1", "tab_1", "grandchild", Some("pane_2")),
+        tree_agent("pane_4", "ws_1", "tab_1", "loner", None),
+    ];
+    projected
+}
+
+fn visible_agent_ids(state: &ClientShellState) -> Vec<String> {
+    state
+        .hits
+        .agents
+        .iter()
+        .map(|(_, pane_id)| pane_id.clone())
+        .collect()
+}
+
+#[test]
+fn tree_sort_collapse_hides_descendants_and_rolls_up_status() {
+    let mut config = tree_sort_config();
+    config.ui.status_indicators = crate::config::StatusIndicatorStyle::Symbols;
+    config.ui.sidebar.agents.rows = vec![vec![
+        crate::config::AgentSidebarToken::StateIcon,
+        crate::config::AgentSidebarToken::Agent,
+    ]];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(tree_snapshot_with_blocked_child()));
+    state.set_pane_surface(surface());
+    let text = frame_text(&mut state);
+    assert_eq!(
+        visible_agent_ids(&state),
+        ["pane_1", "pane_2", "pane_3", "pane_4"]
+    );
+    assert_eq!(
+        state.hits.agent_subtree_toggles.len(),
+        2,
+        "root and child have children; frame: {text}"
+    );
+    assert_eq!(text.matches('▾').count(), 2, "frame: {text}");
+    let root_line = text
+        .lines()
+        .find(|line| line.contains("root"))
+        .expect("root row");
+    assert!(
+        root_line.contains("○ root"),
+        "idle root keeps its own icon: {root_line}"
+    );
+
+    let (toggle, _) = state
+        .hits
+        .agent_subtree_toggles
+        .iter()
+        .find(|(_, pane_id)| pane_id == "pane_1")
+        .cloned()
+        .expect("root toggle");
+    let outcome = click(&mut state, toggle);
+    assert!(
+        outcome.actions.is_empty(),
+        "folding must not focus the pane: {:?}",
+        outcome.actions.len()
+    );
+    let text = frame_text(&mut state);
+    assert_eq!(
+        visible_agent_ids(&state),
+        ["pane_1", "pane_4"],
+        "hidden descendants leave the row list; frame: {text}"
+    );
+    assert!(
+        text.contains("▸2"),
+        "collapsed marker counts hidden agents; frame: {text}"
+    );
+    let root_line = text
+        .lines()
+        .find(|line| line.contains("root"))
+        .expect("root row");
+    assert!(
+        root_line.contains("× root"),
+        "the folded parent shows the blocked state of its hidden child: {root_line}"
+    );
+    assert!(!text.contains("child"), "frame: {text}");
+
+    let ordered = crate::client::shell::agent_sidebar::ordered_agent_pane_ids(
+        state.snapshot.as_deref().expect("snapshot"),
+        crate::config::AgentPanelSortConfig::Tree,
+        state.collapsed_agent_subtrees_for_endpoint(&state.active_endpoint_id),
+    );
+    assert_eq!(
+        ordered,
+        ["pane_1", "pane_4"],
+        "navigation skips hidden agents"
+    );
+
+    let (toggle, _) = state.hits.agent_subtree_toggles[0].clone();
+    click(&mut state, toggle);
+    let text = frame_text(&mut state);
+    assert_eq!(
+        visible_agent_ids(&state),
+        ["pane_1", "pane_2", "pane_3", "pane_4"],
+        "frame: {text}"
+    );
+    assert!(text.contains("▾"), "frame: {text}");
+}
+
+#[test]
+fn collapsed_agent_subtrees_persist_and_forget_closed_panes() {
+    let path = std::env::temp_dir().join(format!(
+        "herdr-shell-agent-fold-{}-{}.json",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos()
+    ));
+    let config =
+        ClientShellConfig::from_config(&tree_sort_config()).with_preferences_path(path.clone());
+    let mut state = ClientShellState::new(config);
+    state.set_snapshot(Box::new(tree_snapshot_with_blocked_child()));
+    state.set_pane_surface(surface());
+    state.compose(106, 40).expect("agent sidebar frame");
+    let (toggle, _) = state
+        .hits
+        .agent_subtree_toggles
+        .iter()
+        .find(|(_, pane_id)| pane_id == "pane_2")
+        .cloned()
+        .expect("child toggle");
+    click(&mut state, toggle);
+    assert!(state.collapsed_agent_subtrees.contains("pane_2"));
+
+    let reloaded_config =
+        ClientShellConfig::from_config(&tree_sort_config()).with_preferences_path(path.clone());
+    let mut reloaded = ClientShellState::new(reloaded_config);
+    assert!(
+        reloaded.collapsed_agent_subtrees.contains("pane_2"),
+        "folds are remembered with the other sidebar preferences"
+    );
+
+    // Once the pane is gone, persisting drops the stale fold.
+    let mut without_child = tree_snapshot_with_blocked_child();
+    without_child.panes.retain(|pane| pane.pane_id != "pane_2");
+    without_child
+        .agents
+        .retain(|agent| agent.pane_id != "pane_2");
+    reloaded.set_snapshot(Box::new(without_child));
+    reloaded.persist_chrome_preferences(&mut ClientShellInput::default());
+    let pruned = ClientShellState::new(
+        ClientShellConfig::from_config(&tree_sort_config()).with_preferences_path(path.clone()),
+    );
+    assert!(pruned.collapsed_agent_subtrees.is_empty());
+    std::fs::remove_file(path).expect("remove fold preferences");
+}
+
+#[test]
+fn focusing_a_hidden_agent_expands_its_collapsed_ancestors() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tree_sort_config()));
+    state.set_snapshot(Box::new(tree_snapshot_with_blocked_child()));
+    state.set_pane_surface(surface());
+    state.compose(106, 40).expect("agent sidebar frame");
+    let (toggle, _) = state
+        .hits
+        .agent_subtree_toggles
+        .iter()
+        .find(|(_, pane_id)| pane_id == "pane_1")
+        .cloned()
+        .expect("root toggle");
+    click(&mut state, toggle);
+    assert!(state.collapsed_agent_subtrees.contains("pane_1"));
+
+    // Focus arrives from outside the sidebar (e.g. `herdr agent focus`).
+    // Same revision as the installed surface so the frame still composes.
+    let mut focused_grandchild = tree_snapshot_with_blocked_child();
+    focused_grandchild.focused_pane_id = Some("pane_3".into());
+    for agent in &mut focused_grandchild.agents {
+        agent.focused = agent.pane_id == "pane_3";
+    }
+    state.set_snapshot(Box::new(focused_grandchild));
+    assert!(
+        !state.collapsed_agent_subtrees.contains("pane_1"),
+        "the focused agent's ancestors unfold"
+    );
+    state.compose(106, 40).expect("agent sidebar frame");
+    assert_eq!(
+        visible_agent_ids(&state),
+        ["pane_1", "pane_2", "pane_3", "pane_4"]
+    );
 }

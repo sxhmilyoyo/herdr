@@ -94,6 +94,7 @@ pub(super) struct ShellHitMap {
     pub(super) popup: Option<PaneHit>,
     pub(super) pane_splits: Vec<PaneSplitHit>,
     pub(super) agents: Vec<(Rect, String)>,
+    pub(super) agent_subtree_toggles: Vec<(Rect, String)>,
     pub(super) endpoint_agents: Vec<(Rect, ClientEndpointId, String)>,
     pub(super) agent_body: Rect,
     pub(super) agent_scrollbar: Rect,
@@ -882,6 +883,9 @@ pub(crate) struct ClientShellState {
     pub(super) tab_press: Option<ClientTabPress>,
     pub(super) collapsed_groups: HashSet<String>,
     pub(super) remote_collapsed_groups: HashMap<ClientEndpointId, HashSet<String>>,
+    /// Agent entries whose subtree is folded in the `tree` sort, by pane id.
+    pub(super) collapsed_agent_subtrees: HashSet<String>,
+    pub(super) remote_collapsed_agent_subtrees: HashMap<ClientEndpointId, HashSet<String>>,
     pub(super) workspace_scroll: usize,
     pub(super) agent_scroll: usize,
     pub(super) pending_agent_reveal: Option<(ClientEndpointId, String)>,
@@ -1020,14 +1024,25 @@ impl ClientShellState {
             config.agent_panel_sort = sort;
         }
         let mut remote_collapsed_groups = HashMap::<ClientEndpointId, HashSet<String>>::new();
+        let mut remote_collapsed_agent_subtrees =
+            HashMap::<ClientEndpointId, HashSet<String>>::new();
         for saved in preferences.remote_collapsed_groups {
             let Ok(profile_id) = crate::client::endpoint::ProfileId::parse(saved.profile_id) else {
                 continue;
             };
-            remote_collapsed_groups
-                .entry(ClientEndpointId::Ssh(profile_id))
-                .or_default()
-                .extend(saved.collapsed_groups);
+            let endpoint_id = ClientEndpointId::Ssh(profile_id);
+            if !saved.collapsed_agent_subtrees.is_empty() {
+                remote_collapsed_agent_subtrees
+                    .entry(endpoint_id.clone())
+                    .or_default()
+                    .extend(saved.collapsed_agent_subtrees);
+            }
+            if !saved.collapsed_groups.is_empty() {
+                remote_collapsed_groups
+                    .entry(endpoint_id)
+                    .or_default()
+                    .extend(saved.collapsed_groups);
+            }
         }
         Self {
             machine_diagnostics: Default::default(),
@@ -1056,6 +1071,8 @@ impl ClientShellState {
             tab_press: None,
             collapsed_groups: preferences.collapsed_groups.into_iter().collect(),
             remote_collapsed_groups,
+            collapsed_agent_subtrees: preferences.collapsed_agent_subtrees.into_iter().collect(),
+            remote_collapsed_agent_subtrees,
             workspace_scroll: 0,
             agent_scroll: 0,
             pending_agent_reveal: None,
@@ -1181,6 +1198,111 @@ impl ClientShellState {
         if !groups.remove(&key) {
             groups.insert(key);
         }
+    }
+
+    pub(super) fn collapsed_agent_subtrees_for_endpoint(
+        &self,
+        endpoint_id: &ClientEndpointId,
+    ) -> &HashSet<String> {
+        if endpoint_id.is_local() {
+            &self.collapsed_agent_subtrees
+        } else {
+            match self.remote_collapsed_agent_subtrees.get(endpoint_id) {
+                Some(subtrees) => subtrees,
+                None => super::agent_sidebar::empty_collapsed_set(),
+            }
+        }
+    }
+
+    pub(super) fn agent_collapse(&self) -> super::agent_sidebar::AgentCollapse<'_> {
+        super::agent_sidebar::AgentCollapse {
+            local: &self.collapsed_agent_subtrees,
+            remote: &self.remote_collapsed_agent_subtrees,
+        }
+    }
+
+    pub(super) fn toggle_collapsed_agent_subtree(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        pane_id: String,
+    ) {
+        let subtrees = if endpoint_id.is_local() {
+            &mut self.collapsed_agent_subtrees
+        } else {
+            self.remote_collapsed_agent_subtrees
+                .entry(endpoint_id.clone())
+                .or_default()
+        };
+        if !subtrees.remove(&pane_id) {
+            subtrees.insert(pane_id);
+        }
+    }
+
+    /// Unfold every collapsed ancestor of the focused agent so the focused row
+    /// stays visible after focus arrives from outside the sidebar. Returns
+    /// whether anything changed.
+    pub(super) fn expand_agent_ancestors_of_focused_pane(&mut self) -> bool {
+        let Some(snapshot) = self.snapshot.as_deref() else {
+            return false;
+        };
+        let Some(focused) = snapshot.focused_pane_id.as_deref() else {
+            return false;
+        };
+        let parent_of = |pane_id: &str| {
+            snapshot
+                .agents
+                .iter()
+                .find(|agent| agent.pane_id == pane_id)
+                .and_then(|agent| agent.parent_pane_id.clone())
+        };
+        let mut ancestors = Vec::new();
+        let mut cursor = parent_of(focused);
+        while let Some(parent) = cursor {
+            if ancestors.contains(&parent) || ancestors.len() > snapshot.agents.len() {
+                break;
+            }
+            cursor = parent_of(&parent);
+            ancestors.push(parent);
+        }
+        if ancestors.is_empty() {
+            return false;
+        }
+        let endpoint_id = self.active_endpoint_id.clone();
+        let subtrees = if endpoint_id.is_local() {
+            &mut self.collapsed_agent_subtrees
+        } else {
+            match self.remote_collapsed_agent_subtrees.get_mut(&endpoint_id) {
+                Some(subtrees) => subtrees,
+                None => return false,
+            }
+        };
+        let before = subtrees.len();
+        for ancestor in &ancestors {
+            subtrees.remove(ancestor);
+        }
+        subtrees.len() != before
+    }
+
+    /// Forget folds for panes that no longer exist on their endpoint.
+    pub(super) fn prune_collapsed_agent_subtrees(&mut self) {
+        if let Some(snapshot) = self.snapshot.as_deref() {
+            self.collapsed_agent_subtrees
+                .retain(|pane_id| snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id));
+        }
+        for endpoint in &self.endpoints {
+            let Some(snapshot) = endpoint.snapshot.as_deref() else {
+                continue;
+            };
+            if let Some(subtrees) = self
+                .remote_collapsed_agent_subtrees
+                .get_mut(&endpoint.endpoint_id)
+            {
+                subtrees
+                    .retain(|pane_id| snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id));
+            }
+        }
+        self.remote_collapsed_agent_subtrees
+            .retain(|_, subtrees| !subtrees.is_empty());
     }
 
     pub(super) fn navigation_workspace_entries(
@@ -1587,6 +1709,10 @@ impl ClientShellState {
         }
         self.snapshot = Some(snapshot);
         self.reconcile_pending_workspace_highlight();
+        if self.expand_agent_ancestors_of_focused_pane() {
+            let mut input = ClientShellInput::default();
+            self.persist_chrome_preferences(&mut input);
+        }
         let pending_surface = self.pending_pane_surface.take();
         if let Some(surface) = pending_surface {
             let matching = self.snapshot.as_ref().is_some_and(|snapshot| {

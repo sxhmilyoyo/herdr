@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use ratatui::{
     buffer::Buffer,
@@ -20,6 +20,40 @@ pub(super) struct AgentRow {
     pub(super) depth: u8,
     /// Whether this entry is the last child of its parent (picks `└─` over `├─`).
     pub(super) last_sibling: bool,
+    /// Whether other listed agents nest under this entry.
+    pub(super) has_children: bool,
+    /// Whether this entry's subtree is folded away.
+    pub(super) collapsed: bool,
+    /// Agents hidden under this entry while it is collapsed.
+    pub(super) hidden_descendants: usize,
+    /// Most urgent status among the hidden descendants.
+    pub(super) hidden_status: Option<crate::api::schema::AgentStatus>,
+}
+
+/// Collapsed agent subtrees per endpoint, as renderers and navigation see them.
+#[derive(Clone, Copy)]
+pub(super) struct AgentCollapse<'a> {
+    pub(super) local: &'a HashSet<String>,
+    pub(super) remote: &'a HashMap<ClientEndpointId, HashSet<String>>,
+}
+
+impl<'a> AgentCollapse<'a> {
+    pub(super) fn for_endpoint(&self, endpoint_id: &ClientEndpointId) -> &'a HashSet<String> {
+        if endpoint_id.is_local() {
+            self.local
+        } else {
+            match self.remote.get(endpoint_id) {
+                Some(subtrees) => subtrees,
+                None => empty_collapsed_set(),
+            }
+        }
+    }
+}
+
+/// Shared empty set for endpoints without collapsed subtrees.
+pub(super) fn empty_collapsed_set() -> &'static HashSet<String> {
+    static EMPTY: std::sync::OnceLock<HashSet<String>> = std::sync::OnceLock::new();
+    EMPTY.get_or_init(HashSet::new)
 }
 
 /// Deeper entries share this indentation so narrow sidebars stay readable.
@@ -31,26 +65,38 @@ pub(super) struct OrderedAgent {
     pub(super) pane_id: String,
     pub(super) depth: u8,
     pub(super) last_sibling: bool,
+    pub(super) has_children: bool,
+    pub(super) collapsed: bool,
+    pub(super) hidden_descendants: usize,
+    pub(super) hidden_status: Option<crate::api::schema::AgentStatus>,
 }
 
 pub(super) fn ordered_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
     sort: crate::config::AgentPanelSortConfig,
+    collapsed: &HashSet<String>,
 ) -> Vec<String> {
-    ordered_agent_entries(snapshot, sort)
+    ordered_agent_entries(snapshot, sort, collapsed)
         .into_iter()
         .map(|entry| entry.pane_id)
         .collect()
 }
 
+/// Agents in display order. `collapsed` holds pane ids whose subtree is folded
+/// in the `tree` sort; the other sorts stay flat and ignore it.
 pub(super) fn ordered_agent_entries(
     snapshot: &ClientShellSnapshot,
     sort: crate::config::AgentPanelSortConfig,
+    collapsed: &HashSet<String>,
 ) -> Vec<OrderedAgent> {
     let flat = |pane_id: &str| OrderedAgent {
         pane_id: pane_id.to_owned(),
         depth: 0,
         last_sibling: false,
+        has_children: false,
+        collapsed: false,
+        hidden_descendants: 0,
+        hidden_status: None,
     };
     if snapshot.agent_view_label.is_some() {
         return snapshot
@@ -66,7 +112,9 @@ pub(super) fn ordered_agent_entries(
             .collect();
     }
     match sort {
-        crate::config::AgentPanelSortConfig::Tree => agent_tree_entries(&snapshot.agents),
+        crate::config::AgentPanelSortConfig::Tree => {
+            agent_tree_entries(&snapshot.agents, collapsed)
+        }
         crate::config::AgentPanelSortConfig::Priority => {
             let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
             agents.sort_by_key(|agent| {
@@ -92,11 +140,14 @@ pub(super) fn ordered_agent_entries(
 /// among siblings. A parent that is not itself a listed agent makes its
 /// children roots; the server forbids cycles, but a stale snapshot must not
 /// hang the client, so every agent is emitted exactly once.
-fn agent_tree_entries(agents: &[ClientShellAgent]) -> Vec<OrderedAgent> {
+fn agent_tree_entries(
+    agents: &[ClientShellAgent],
+    collapsed: &HashSet<String>,
+) -> Vec<OrderedAgent> {
     let listed = agents
         .iter()
         .map(|agent| agent.pane_id.as_str())
-        .collect::<std::collections::HashSet<_>>();
+        .collect::<HashSet<_>>();
     let mut children: HashMap<&str, Vec<&ClientShellAgent>> = HashMap::new();
     let mut roots = Vec::new();
     for agent in agents {
@@ -110,30 +161,74 @@ fn agent_tree_entries(agents: &[ClientShellAgent]) -> Vec<OrderedAgent> {
         }
     }
 
+    /// Mark a folded subtree visited and report how many agents it hides and
+    /// the most urgent status among them.
+    fn hide_subtree<'a>(
+        agent: &'a ClientShellAgent,
+        children: &HashMap<&str, Vec<&'a ClientShellAgent>>,
+        visited: &mut HashSet<&'a str>,
+    ) -> (usize, Option<crate::api::schema::AgentStatus>) {
+        let mut hidden = 0;
+        let mut status = None;
+        for kid in children
+            .get(agent.pane_id.as_str())
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+        {
+            if !visited.insert(kid.pane_id.as_str()) {
+                continue;
+            }
+            hidden += 1;
+            status = most_urgent(status, kid.agent_status);
+            let (nested_hidden, nested_status) = hide_subtree(kid, children, visited);
+            hidden += nested_hidden;
+            if let Some(nested_status) = nested_status {
+                status = most_urgent(status, nested_status);
+            }
+        }
+        (hidden, status)
+    }
+
     fn visit<'a>(
         agent: &'a ClientShellAgent,
         depth: u8,
         last_sibling: bool,
         children: &HashMap<&str, Vec<&'a ClientShellAgent>>,
-        visited: &mut std::collections::HashSet<&'a str>,
+        collapsed: &HashSet<String>,
+        visited: &mut HashSet<&'a str>,
         out: &mut Vec<OrderedAgent>,
     ) {
         if !visited.insert(agent.pane_id.as_str()) {
             return;
         }
+        let kids = children.get(agent.pane_id.as_str());
+        let has_children = kids.is_some_and(|kids| !kids.is_empty());
+        let fold = has_children && collapsed.contains(&agent.pane_id);
+        let index = out.len();
         out.push(OrderedAgent {
             pane_id: agent.pane_id.clone(),
             depth,
             last_sibling,
+            has_children,
+            collapsed: fold,
+            hidden_descendants: 0,
+            hidden_status: None,
         });
-        if let Some(kids) = children.get(agent.pane_id.as_str()) {
+        if fold {
+            let (hidden, status) = hide_subtree(agent, children, visited);
+            out[index].hidden_descendants = hidden;
+            out[index].hidden_status = status;
+            return;
+        }
+        if let Some(kids) = kids {
             let count = kids.len();
-            for (index, kid) in kids.iter().enumerate() {
+            for (position, kid) in kids.iter().enumerate() {
                 visit(
                     kid,
                     depth.saturating_add(1),
-                    index + 1 == count,
+                    position + 1 == count,
                     children,
+                    collapsed,
                     visited,
                     out,
                 );
@@ -141,18 +236,36 @@ fn agent_tree_entries(agents: &[ClientShellAgent]) -> Vec<OrderedAgent> {
         }
     }
 
-    let mut visited = std::collections::HashSet::new();
+    let mut visited = HashSet::new();
     let mut out = Vec::with_capacity(agents.len());
     for root in &roots {
-        visit(root, 0, false, &children, &mut visited, &mut out);
+        visit(root, 0, false, &children, collapsed, &mut visited, &mut out);
     }
     for agent in agents {
         if !visited.contains(agent.pane_id.as_str()) {
             // Only reachable through a parent cycle; show it as a root.
-            visit(agent, 0, false, &children, &mut visited, &mut out);
+            visit(
+                agent,
+                0,
+                false,
+                &children,
+                collapsed,
+                &mut visited,
+                &mut out,
+            );
         }
     }
     out
+}
+
+fn most_urgent(
+    current: Option<crate::api::schema::AgentStatus>,
+    candidate: crate::api::schema::AgentStatus,
+) -> Option<crate::api::schema::AgentStatus> {
+    match current {
+        Some(current) if status_priority(current) >= status_priority(candidate) => Some(current),
+        _ => Some(candidate),
+    }
 }
 
 pub(super) fn render_agent_panel(
@@ -161,6 +274,7 @@ pub(super) fn render_agent_panel(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     agent_scroll: &mut usize,
+    collapsed: &HashSet<String>,
     hits: &mut ShellHitMap,
 ) {
     if !render_agent_panel_header(
@@ -173,7 +287,7 @@ pub(super) fn render_agent_panel(
         return;
     }
 
-    let rows = agent_rows(snapshot, config, None);
+    let rows = agent_rows(snapshot, config, None, collapsed);
     render_agent_list(
         buffer,
         area,
@@ -188,7 +302,10 @@ pub(super) fn render_agent_panel(
         |row| row.rows.len(),
         |buffer, rect, row, hits| {
             hits.agents.push((rect, row.pane_id.clone()));
-            render_agent_row(buffer, rect, row, config);
+            if let Some(toggle) = render_agent_row(buffer, rect, row, config) {
+                hits.agent_subtree_toggles
+                    .push((toggle, row.pane_id.clone()));
+            }
         },
     );
 }
@@ -345,13 +462,18 @@ pub(super) fn agent_rows(
     snapshot: &ClientShellSnapshot,
     config: &ClientShellConfig,
     machine: Option<&str>,
+    collapsed: &HashSet<String>,
 ) -> Vec<AgentRow> {
-    ordered_agent_entries(snapshot, config.agent_panel_sort)
+    ordered_agent_entries(snapshot, config.agent_panel_sort, collapsed)
         .into_iter()
         .filter_map(|entry| {
             let mut row = agent_row(snapshot, &entry.pane_id, config, machine)?;
             row.depth = entry.depth;
             row.last_sibling = entry.last_sibling;
+            row.has_children = entry.has_children;
+            row.collapsed = entry.collapsed;
+            row.hidden_descendants = entry.hidden_descendants;
+            row.hidden_status = entry.hidden_status;
             Some(row)
         })
         .collect()
@@ -429,6 +551,10 @@ pub(super) fn agent_row(
         rows,
         depth: 0,
         last_sibling: false,
+        has_children: false,
+        collapsed: false,
+        hidden_descendants: 0,
+        hidden_status: None,
     })
 }
 
@@ -437,12 +563,20 @@ pub(super) fn render_agent_row(
     rect: Rect,
     row: &AgentRow,
     config: &ClientShellConfig,
-) {
+) -> Option<Rect> {
     let palette = &config.palette;
     let row_style = if row.focused {
         Style::default().bg(palette.active_row_bg)
     } else {
         Style::default()
+    };
+    // A folded parent speaks for its hidden subtree: the most urgent hidden
+    // state colors the icon and the fold marker.
+    let shown_status = match row.hidden_status {
+        Some(hidden) if row.collapsed && status_priority(hidden) > status_priority(row.status) => {
+            hidden
+        }
+        _ => row.status,
     };
     let name_style = if row.focused {
         Style::default()
@@ -453,12 +587,20 @@ pub(super) fn render_agent_row(
             .fg(palette.subtext0)
             .add_modifier(Modifier::BOLD)
     };
-    let status_style = Style::default().fg(status_color(row.status, palette));
+    let status_style = Style::default().fg(status_color(shown_status, palette));
     let secondary = Style::default().fg(palette.overlay0);
     let icon = (
-        status_icon(row.status, config.status_indicators),
-        Style::default().fg(status_color(row.status, palette)),
+        status_icon(shown_status, config.status_indicators),
+        Style::default().fg(status_color(shown_status, palette)),
     );
+    let marker = row.has_children.then(|| {
+        if row.collapsed {
+            format!("▸{}", row.hidden_descendants)
+        } else {
+            "▾".to_owned()
+        }
+    });
+    let marker_width = marker.as_deref().map(display_width).unwrap_or(0) as u16;
     let rows = if row.rows.is_empty() {
         vec![vec![crate::ui::ResolvedToken {
             kind: crate::ui::ResolvedTokenKind::StateIcon,
@@ -471,6 +613,12 @@ pub(super) fn render_agent_row(
     for (index, tokens) in rows.iter().take(rect.height as usize).enumerate() {
         let prefix = tree_row_prefix(depth, index == 0, row.last_sibling);
         let indent = display_width(&prefix);
+        // The first line keeps room for the fold marker and one gap cell.
+        let reserved = if index == 0 && marker_width > 0 {
+            marker_width.saturating_add(1)
+        } else {
+            0
+        };
         let mut spans = vec![ratatui::text::Span::styled(
             prefix,
             Style::default().fg(palette.overlay0),
@@ -483,13 +631,36 @@ pub(super) fn render_agent_row(
             secondary,
             secondary,
             palette,
-            rect.width.saturating_sub(indent as u16) as usize,
+            rect.width
+                .saturating_sub(indent as u16)
+                .saturating_sub(reserved) as usize,
         ));
         Paragraph::new(Line::from(spans)).style(row_style).render(
             Rect::new(rect.x, rect.y + index as u16, rect.width, 1),
             buffer,
         );
     }
+    let marker = marker.filter(|_| rect.height > 0 && rect.width > marker_width)?;
+    let marker_rect = Rect::new(
+        rect.right().saturating_sub(marker_width),
+        rect.y,
+        marker_width,
+        1,
+    );
+    let marker_style = if row.collapsed {
+        Style::default().fg(status_color(shown_status, palette))
+    } else {
+        Style::default().fg(palette.accent)
+    };
+    put_text(
+        buffer,
+        marker_rect.x,
+        marker_rect.y,
+        marker_rect.width,
+        &marker,
+        row_style.patch(marker_style),
+    );
+    Some(marker_rect)
 }
 
 /// Leading cells for one line of an agent entry: roots keep the flat layout

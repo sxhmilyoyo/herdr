@@ -367,6 +367,7 @@ pub(super) fn render_mobile_switcher(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
+    collapse: super::agent_sidebar::AgentCollapse<'_>,
     selected_workspace_id: Option<&WorkspaceNavigationTarget>,
     scroll: &mut usize,
     reveal_workspace: &mut bool,
@@ -441,6 +442,7 @@ pub(super) fn render_mobile_switcher(
         endpoints,
         active_endpoint_id,
         config,
+        collapse,
         selected_workspace_id,
         viewport.width.saturating_sub(1),
     );
@@ -577,6 +579,7 @@ fn mobile_items(
     endpoints: &[ClientShellEndpoint],
     active_endpoint_id: &ClientEndpointId,
     config: &ClientShellConfig,
+    collapse: super::agent_sidebar::AgentCollapse<'_>,
     selected_workspace_id: Option<&WorkspaceNavigationTarget>,
     content_width: u16,
 ) -> Vec<MobileItem> {
@@ -614,6 +617,7 @@ fn mobile_items(
         endpoints,
         active_endpoint_id,
         config.agent_panel_sort,
+        collapse,
     );
     let agent_view_label = snapshot.agent_view_label.as_deref();
     if !agents.is_empty() || agent_view_label.is_some() {
