@@ -5,6 +5,12 @@
 //! `pane_parent` capability, so older servers keep working; an explicit
 //! `--parent` on such a server is an error instead of a silent no-op.
 
+use std::fmt;
+
+use clap::{parser::ValueSource, Arg, ArgAction, ArgMatches};
+
+use super::projection::ParseError;
+
 /// How a creating command chooses the new pane's parent.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(super) enum ParentArg {
@@ -17,45 +23,87 @@ pub(super) enum ParentArg {
     Detached,
 }
 
-/// Remove `--parent <ID>`, `--parent=<ID>`, and `--no-parent` from `args`.
+/// Appends `--parent <ID>` and `--no-parent` to a creating command's arguments.
 ///
-/// The remaining arguments are returned unchanged so existing parsers keep
-/// their contracts. The last parent flag wins.
-pub(super) fn take_parent_flags(args: &[String]) -> Result<(Vec<String>, ParentArg), String> {
-    let mut remaining = Vec::with_capacity(args.len());
-    let mut parent = ParentArg::Inherit;
-    let mut index = 0;
-    while index < args.len() {
-        let arg = args[index].as_str();
-        if arg == "--" {
-            remaining.extend(args[index..].iter().cloned());
-            break;
-        }
-        if arg == "--no-parent" {
-            parent = ParentArg::Detached;
-            index += 1;
-            continue;
-        }
-        let value = if arg == "--parent" {
-            let Some(value) = args.get(index + 1) else {
-                return Err("missing value for --parent".into());
-            };
-            index += 2;
-            value.as_str()
-        } else if let Some(value) = arg.strip_prefix("--parent=") {
-            index += 1;
-            value
-        } else {
-            remaining.push(args[index].clone());
-            index += 1;
-            continue;
-        };
-        if value.trim().is_empty() || value.starts_with('-') {
-            return Err("--parent requires a pane id or a live agent name".into());
-        }
-        parent = ParentArg::Explicit(value.to_string());
+/// The flags are read back from the matches by `caller_pane_id`, so the
+/// `caller_pane_id` projection field declares no input of its own.
+pub(super) fn with_parent_flags(mut arguments: Vec<Arg>) -> Vec<Arg> {
+    arguments.push(
+        Arg::new("parent")
+            .long("parent")
+            .value_name("ID")
+            .action(ArgAction::Set)
+            .value_parser(clap::builder::NonEmptyStringValueParser::new())
+            .help(
+                "Record this pane id or live agent name as the new pane's parent \
+                 (default: the calling pane from HERDR_PANE_ID)",
+            ),
+    );
+    arguments.push(
+        Arg::new("no-parent")
+            .long("no-parent")
+            .action(ArgAction::SetTrue)
+            .help("Do not record a parent pane"),
+    );
+    arguments
+}
+
+fn last_index(matches: &ArgMatches, id: &str) -> Option<usize> {
+    if matches.value_source(id) != Some(ValueSource::CommandLine) {
+        return None;
     }
-    Ok((remaining, parent))
+    matches
+        .indices_of(id)
+        .and_then(|mut indices| indices.next_back())
+}
+
+/// The parent choice in `matches`. The last parent flag wins.
+fn parent_arg(matches: &ArgMatches) -> ParentArg {
+    let explicit = last_index(matches, "parent");
+    let detached = last_index(matches, "no-parent");
+    // `None` orders below `Some`, so a lone `--no-parent` also detaches.
+    if detached > explicit {
+        return ParentArg::Detached;
+    }
+    match explicit.and(matches.get_one::<String>("parent")) {
+        Some(value) => ParentArg::Explicit(value.clone()),
+        None => ParentArg::Inherit,
+    }
+}
+
+/// The `caller_pane_id` for a creating request parsed into `matches`.
+///
+/// A `--parent` failure is marked so the command dispatcher prints its message
+/// and exits 1; see `is_parent_error`.
+pub(super) fn caller_pane_id(matches: &ArgMatches) -> Result<Option<String>, ParseError> {
+    let parent = parent_arg(matches);
+    if matches!(&parent, ParentArg::Explicit(value) if value.trim().is_empty()) {
+        return Err(ParseError::Usage(
+            "--parent requires a pane id or a live agent name".into(),
+        ));
+    }
+    caller_pane_for_request(&parent)
+        .map_err(|error| ParseError::Io(std::io::Error::other(ParentError(error))))
+}
+
+/// Marks a `--parent` failure. An ordinary I/O error from request building
+/// reaches `main` and is printed in debug form; this one is reported as its
+/// plain message with exit code 1.
+#[derive(Debug)]
+struct ParentError(std::io::Error);
+
+impl fmt::Display for ParentError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+impl std::error::Error for ParentError {}
+
+pub(super) fn is_parent_error(error: &std::io::Error) -> bool {
+    error
+        .get_ref()
+        .is_some_and(|source| source.is::<ParentError>())
 }
 
 /// The `caller_pane_id` to send for a creating request.
@@ -132,55 +180,60 @@ fn server_supports_pane_parent() -> std::io::Result<bool> {
 mod tests {
     use super::*;
 
-    fn args(values: &[&str]) -> Vec<String> {
-        values.iter().map(|value| (*value).to_string()).collect()
+    fn parent(values: &[&str]) -> Result<ParentArg, clap::Error> {
+        let matches = super::super::projection::command("create", with_parent_flags(Vec::new()))
+            .no_binary_name(true)
+            .try_get_matches_from(values)?;
+        Ok(parent_arg(&matches))
     }
 
     #[test]
-    fn take_parent_flags_defaults_to_inherit_and_keeps_other_args() {
-        let (remaining, parent) =
-            take_parent_flags(&args(&["--direction", "right", "--no-focus"])).unwrap();
-        assert_eq!(remaining, args(&["--direction", "right", "--no-focus"]));
-        assert_eq!(parent, ParentArg::Inherit);
+    fn parent_flags_default_to_inherit() {
+        assert_eq!(parent(&[]).unwrap(), ParentArg::Inherit);
     }
 
     #[test]
-    fn take_parent_flags_extracts_explicit_parent_in_both_forms() {
-        let (remaining, parent) =
-            take_parent_flags(&args(&["--parent", "w1:p2", "--direction", "down"])).unwrap();
-        assert_eq!(remaining, args(&["--direction", "down"]));
-        assert_eq!(parent, ParentArg::Explicit("w1:p2".into()));
-
-        let (remaining, parent) =
-            take_parent_flags(&args(&["--cwd", "/tmp", "--parent=reviewer"])).unwrap();
-        assert_eq!(remaining, args(&["--cwd", "/tmp"]));
-        assert_eq!(parent, ParentArg::Explicit("reviewer".into()));
+    fn parent_flags_accept_an_explicit_parent_in_both_forms() {
+        assert_eq!(
+            parent(&["--parent", "w1:p2"]).unwrap(),
+            ParentArg::Explicit("w1:p2".into())
+        );
+        assert_eq!(
+            parent(&["--parent=reviewer"]).unwrap(),
+            ParentArg::Explicit("reviewer".into())
+        );
     }
 
     #[test]
-    fn take_parent_flags_no_parent_detaches_and_last_flag_wins() {
-        let (remaining, parent) =
-            take_parent_flags(&args(&["--parent", "w1:p2", "--no-parent"])).unwrap();
-        assert!(remaining.is_empty());
-        assert_eq!(parent, ParentArg::Detached);
-
-        let (_, parent) = take_parent_flags(&args(&["--no-parent", "--parent", "w1:p2"])).unwrap();
-        assert_eq!(parent, ParentArg::Explicit("w1:p2".into()));
+    fn parent_flags_last_flag_wins() {
+        assert_eq!(parent(&["--no-parent"]).unwrap(), ParentArg::Detached);
+        assert_eq!(
+            parent(&["--parent", "w1:p2", "--no-parent"]).unwrap(),
+            ParentArg::Detached
+        );
+        assert_eq!(
+            parent(&["--no-parent", "--parent", "w1:p2"]).unwrap(),
+            ParentArg::Explicit("w1:p2".into())
+        );
+        assert_eq!(
+            parent(&["--parent", "first", "--parent", "last"]).unwrap(),
+            ParentArg::Explicit("last".into())
+        );
     }
 
     #[test]
-    fn take_parent_flags_rejects_missing_or_flag_like_values() {
-        assert!(take_parent_flags(&args(&["--parent"])).is_err());
-        assert!(take_parent_flags(&args(&["--parent", "--direction"])).is_err());
-        assert!(take_parent_flags(&args(&["--parent="])).is_err());
+    fn parent_flags_reject_missing_empty_or_flag_like_values() {
+        assert!(parent(&["--parent"]).is_err());
+        assert!(parent(&["--parent", ""]).is_err());
+        assert!(parent(&["--parent", "--no-parent"]).is_err());
     }
 
     #[test]
-    fn take_parent_flags_stops_at_double_dash() {
-        let (remaining, parent) =
-            take_parent_flags(&args(&["--no-parent", "--", "--parent", "x"])).unwrap();
-        assert_eq!(remaining, args(&["--", "--parent", "x"]));
-        assert_eq!(parent, ParentArg::Detached);
+    fn parent_errors_are_marked_and_keep_their_message() {
+        let marked = std::io::Error::other(ParentError(std::io::Error::other("boom")));
+        assert!(is_parent_error(&marked));
+        assert_eq!(marked.to_string(), "boom");
+        assert!(!is_parent_error(&std::io::Error::other("boom")));
     }
 
     #[test]
