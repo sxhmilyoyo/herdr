@@ -1731,6 +1731,17 @@ fn selected_position_sort_uses_public_tab_and_pane_numbers() {
     .map(|row| row.agent.name.as_deref().expect("agent name"))
     .collect::<Vec<_>>();
     assert_eq!(names, ["pane two", "pane nine", "tab nine"]);
+    // An explicit view sort also wins over the tree sort.
+    let tree_names = aggregate_navigation::aggregate_agent_rows(
+        &state.endpoints,
+        &state.active_endpoint_id,
+        crate::config::AgentPanelSortConfig::Tree,
+        state.agent_collapse(),
+    )
+    .into_iter()
+    .map(|row| row.agent.name.as_deref().expect("agent name"))
+    .collect::<Vec<_>>();
+    assert_eq!(tree_names, names);
 }
 
 #[test]
@@ -2841,4 +2852,151 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
             target: Some(ClientEndpointFocusTarget::Workspace(workspace_id)),
         }] if activated == &endpoint_id && workspace_id == "ws_1"
     ));
+}
+
+#[test]
+fn aggregate_tree_sort_nests_each_machine_separately() {
+    use crate::api::schema::AgentStatus;
+    use crate::config::AgentSidebarToken;
+    let mut config = Config::default();
+    config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Tree;
+    config.ui.sidebar.agents.rows = vec![vec![AgentSidebarToken::Agent]];
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    let profile = remote_profile();
+    let remote = ClientEndpointId::Ssh(profile.id.clone());
+    state.set_endpoint_catalog(&[profile]);
+    state.set_endpoint_status(&remote, ClientEndpointStatus::Online);
+    // Local lists one agent whose recorded parent pane exists only on the remote.
+    let mut local = snapshot();
+    let mut local_agent = agent("local-root", AgentStatus::Idle, 1);
+    local_agent.parent_pane_id = Some("pane_p".into());
+    local.agents = vec![local_agent];
+    state.set_snapshot(Box::new(local));
+    state.set_pane_surface(surface());
+    // Remote server order: parent, unrelated, child.
+    let mut remote_snapshot = snapshot();
+    remote_snapshot.boot_id = "remote-boot".into();
+    let mut parent = agent("parent", AgentStatus::Idle, 1);
+    parent.pane_id = "pane_p".into();
+    parent.focused = false;
+    let mut other = agent("other", AgentStatus::Idle, 1);
+    other.pane_id = "pane_x".into();
+    other.focused = false;
+    let mut child = agent("child", AgentStatus::Idle, 1);
+    child.pane_id = "pane_c".into();
+    child.parent_pane_id = Some("pane_p".into());
+    child.focused = false;
+    remote_snapshot.agents = vec![parent, other, child];
+    remote_snapshot.panes = remote_snapshot
+        .agents
+        .iter()
+        .map(|agent| ClientShellPane {
+            pane_id: agent.pane_id.clone(),
+            focused: false,
+            ..remote_snapshot.panes[0].clone()
+        })
+        .collect();
+    state.set_endpoint_snapshot(&remote, Box::new(remote_snapshot));
+    // Every current server advertises agent view projection; that is the
+    // aggregate branch that used to keep raw server order.
+    for endpoint_id in [ClientEndpointId::Local, remote.clone()] {
+        state.set_endpoint_agent_view_projection_supported(&endpoint_id, true);
+    }
+
+    let placed = |state: &ClientShellState| {
+        aggregate_navigation::aggregate_agent_rows(
+            &state.endpoints,
+            &state.active_endpoint_id,
+            crate::config::AgentPanelSortConfig::Tree,
+            state.agent_collapse(),
+        )
+        .into_iter()
+        .map(|row| {
+            (
+                row.agent.name.clone().expect("agent name"),
+                row.entry.depth,
+                row.entry.has_children,
+                row.entry.hidden_descendants,
+            )
+        })
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        placed(&state),
+        [
+            ("local-root".to_string(), 0, false, 0),
+            ("parent".to_string(), 0, true, 0),
+            ("child".to_string(), 1, false, 0),
+            ("other".to_string(), 0, false, 0),
+        ],
+        "each machine is its own tree; a parent id from another machine does not nest"
+    );
+
+    let frame = state.compose(100, 28).expect("frame");
+    let text = frame_rows(&frame).join("\n");
+    let child_line = text
+        .lines()
+        .find(|line| line.contains("child"))
+        .expect("child row");
+    assert!(
+        child_line.contains("└─"),
+        "child carries a guide: {child_line}"
+    );
+    let local_line = text
+        .lines()
+        .find(|line| line.contains("local-root"))
+        .expect("local row");
+    assert!(
+        !local_line.contains('─'),
+        "a parent on another machine renders as a root: {local_line}"
+    );
+    assert_eq!(
+        state
+            .hits
+            .endpoint_agent_subtree_toggles
+            .iter()
+            .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id.as_str()))
+            .collect::<Vec<_>>(),
+        [(remote.clone(), "pane_p")],
+        "only the remote parent offers a fold marker"
+    );
+
+    // Clicking the marker folds the remote subtree, not a local one.
+    let (toggle, _, _) = state.hits.endpoint_agent_subtree_toggles[0].clone();
+    state.handle_mouse(
+        crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: toggle.x,
+            row: toggle.y,
+            modifiers: KeyModifiers::NONE,
+        },
+        &mut ClientShellInput::default(),
+    );
+    assert!(state.collapsed_agent_subtrees.is_empty());
+    assert!(state
+        .collapsed_agent_subtrees_for_endpoint(&remote)
+        .contains("pane_p"));
+    assert_eq!(
+        placed(&state),
+        [
+            ("local-root".to_string(), 0, false, 0),
+            ("parent".to_string(), 0, true, 1),
+            ("other".to_string(), 0, false, 0),
+        ],
+        "the folded child leaves the aggregate order"
+    );
+    let frame = state.compose(100, 28).expect("frame");
+    let text = frame_rows(&frame).join("\n");
+    assert!(
+        text.contains("▸1"),
+        "folded parent shows the hidden count: {text}"
+    );
+    assert!(
+        !state
+            .hits
+            .endpoint_agents
+            .iter()
+            .any(|(_, _, pane_id)| pane_id == "pane_c"),
+        "hidden agents are not clickable"
+    );
 }

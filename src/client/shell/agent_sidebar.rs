@@ -30,6 +30,19 @@ pub(super) struct AgentRow {
     pub(super) hidden_status: Option<crate::api::schema::AgentStatus>,
 }
 
+impl AgentRow {
+    /// Take the tree placement computed for this row's pane.
+    pub(super) fn place(mut self, entry: &OrderedAgent) -> Self {
+        self.depth = entry.depth;
+        self.last_sibling = entry.last_sibling;
+        self.has_children = entry.has_children;
+        self.collapsed = entry.collapsed;
+        self.hidden_descendants = entry.hidden_descendants;
+        self.hidden_status = entry.hidden_status;
+        self
+    }
+}
+
 /// Collapsed agent subtrees per endpoint, as renderers and navigation see them.
 #[derive(Clone, Copy)]
 pub(super) struct AgentCollapse<'a> {
@@ -71,6 +84,21 @@ pub(super) struct OrderedAgent {
     pub(super) hidden_status: Option<crate::api::schema::AgentStatus>,
 }
 
+impl OrderedAgent {
+    /// An entry outside any tree: a root with nothing folded under it.
+    pub(super) fn flat(pane_id: &str) -> Self {
+        Self {
+            pane_id: pane_id.to_owned(),
+            depth: 0,
+            last_sibling: false,
+            has_children: false,
+            collapsed: false,
+            hidden_descendants: 0,
+            hidden_status: None,
+        }
+    }
+}
+
 pub(super) fn ordered_agent_pane_ids(
     snapshot: &ClientShellSnapshot,
     sort: crate::config::AgentPanelSortConfig,
@@ -89,15 +117,6 @@ pub(super) fn ordered_agent_entries(
     sort: crate::config::AgentPanelSortConfig,
     collapsed: &HashSet<String>,
 ) -> Vec<OrderedAgent> {
-    let flat = |pane_id: &str| OrderedAgent {
-        pane_id: pane_id.to_owned(),
-        depth: 0,
-        last_sibling: false,
-        has_children: false,
-        collapsed: false,
-        hidden_descendants: 0,
-        hidden_status: None,
-    };
     if snapshot.agent_view_label.is_some() {
         return snapshot
             .agent_order
@@ -108,7 +127,7 @@ pub(super) fn ordered_agent_entries(
                     .iter()
                     .any(|agent| agent.pane_id == pane_id.as_str())
             })
-            .map(|pane_id| flat(pane_id))
+            .map(|pane_id| OrderedAgent::flat(pane_id))
             .collect();
     }
     match sort {
@@ -125,13 +144,13 @@ pub(super) fn ordered_agent_entries(
             });
             agents
                 .into_iter()
-                .map(|agent| flat(&agent.pane_id))
+                .map(|agent| OrderedAgent::flat(&agent.pane_id))
                 .collect()
         }
         crate::config::AgentPanelSortConfig::Spaces => snapshot
             .agents
             .iter()
-            .map(|agent| flat(&agent.pane_id))
+            .map(|agent| OrderedAgent::flat(&agent.pane_id))
             .collect(),
     }
 }
@@ -140,7 +159,7 @@ pub(super) fn ordered_agent_entries(
 /// among siblings. A parent that is not itself a listed agent makes its
 /// children roots; the server forbids cycles, but a stale snapshot must not
 /// hang the client, so every agent is emitted exactly once.
-fn agent_tree_entries(
+pub(super) fn agent_tree_entries(
     agents: &[ClientShellAgent],
     collapsed: &HashSet<String>,
 ) -> Vec<OrderedAgent> {
@@ -467,14 +486,8 @@ pub(super) fn agent_rows(
     ordered_agent_entries(snapshot, config.agent_panel_sort, collapsed)
         .into_iter()
         .filter_map(|entry| {
-            let mut row = agent_row(snapshot, &entry.pane_id, config, machine)?;
-            row.depth = entry.depth;
-            row.last_sibling = entry.last_sibling;
-            row.has_children = entry.has_children;
-            row.collapsed = entry.collapsed;
-            row.hidden_descendants = entry.hidden_descendants;
-            row.hidden_status = entry.hidden_status;
-            Some(row)
+            let row = agent_row(snapshot, &entry.pane_id, config, machine)?;
+            Some(row.place(&entry))
         })
         .collect()
 }
