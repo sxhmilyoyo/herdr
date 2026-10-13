@@ -36,4 +36,7 @@ pub struct ServerCapabilities {
     /// Supports connection-scoped `server.ssh_agent.register` on the local JSON API.
     #[serde(default)]
     pub ssh_agent_registration: bool,
+    /// Creating methods accept `caller_pane_id`; pane and agent records carry `parent_pane_id`.
+    #[serde(default)]
+    pub pane_parent: bool,
 }

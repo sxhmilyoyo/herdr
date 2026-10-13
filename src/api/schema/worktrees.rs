@@ -28,6 +28,10 @@ pub struct WorktreeCreateParams {
     pub focus: bool,
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub trust_repository: bool,
+    /// Pane whose process issued this request; it becomes the new pane's parent.
+    /// Only sent when the server advertises the `pane_parent` capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, Default)]
@@ -46,6 +50,10 @@ pub struct WorktreeOpenParams {
     pub focus: bool,
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub trust_repository: bool,
+    /// Pane whose process issued this request; it becomes the new pane's parent.
+    /// Only sent when the server advertises the `pane_parent` capability.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub caller_pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

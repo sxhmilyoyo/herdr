@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "protocol": 22,
+  "protocol": 23,
   "schema_version": 1,
   "schemas": {
     "error_response": {
@@ -807,6 +807,13 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "parent_pane_id": {
+              "description": "Pane this pane was created from, while that pane is still open.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "restore_error": {
               "type": [
@@ -3214,6 +3221,13 @@
         },
         "PaneSplitParams": {
           "properties": {
+            "caller_pane_id": {
+              "description": "Pane whose process issued this request; it becomes the new pane's parent.\nOnly sent when the server advertises the `pane_parent` capability.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "type": [
                 "string",
@@ -4272,6 +4286,13 @@
         },
         "TabCreateParams": {
           "properties": {
+            "caller_pane_id": {
+              "description": "Pane whose process issued this request; it becomes the new pane's parent.\nOnly sent when the server advertises the `pane_parent` capability.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "type": [
                 "string",
@@ -4382,6 +4403,13 @@
         },
         "WorkspaceCreateParams": {
           "properties": {
+            "caller_pane_id": {
+              "description": "Pane whose process issued this request; it becomes the new pane's parent.\nOnly sent when the server advertises the `pane_parent` capability.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "type": [
                 "string",
@@ -4564,6 +4592,13 @@
                 "null"
               ]
             },
+            "caller_pane_id": {
+              "description": "Pane whose process issued this request; it becomes the new pane's parent.\nOnly sent when the server advertises the `pane_parent` capability.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "cwd": {
               "type": [
                 "string",
@@ -4621,6 +4656,13 @@
         "WorktreeOpenParams": {
           "properties": {
             "branch": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "caller_pane_id": {
+              "description": "Pane whose process issued this request; it becomes the new pane's parent.\nOnly sent when the server advertises the `pane_parent` capability.",
               "type": [
                 "string",
                 "null"
@@ -6606,6 +6648,13 @@
             "pane_id": {
               "type": "string"
             },
+            "parent_pane_id": {
+              "description": "Pane this pane was created from, while that pane is still open.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "revision": {
               "format": "uint64",
               "minimum": 0,
@@ -7915,6 +7964,13 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "parent_pane_id": {
+              "description": "Pane this pane was created from, while that pane is still open.",
+              "type": [
+                "string",
+                "null"
+              ]
             },
             "restore_error": {
               "type": [
@@ -10439,6 +10495,11 @@
               "type": "boolean"
             },
             "live_handoff": {
+              "type": "boolean"
+            },
+            "pane_parent": {
+              "default": false,
+              "description": "Creating methods accept `caller_pane_id`; pane and agent records carry `parent_pane_id`.",
               "type": "boolean"
             },
             "ssh_agent_registration": {

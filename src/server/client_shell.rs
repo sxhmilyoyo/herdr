@@ -145,6 +145,7 @@ pub(super) fn snapshot_with_completions(
                 foreground_cwd: pane.foreground_cwd,
                 focused,
                 right_click_passthrough,
+                parent_pane_id: pane.parent_pane_id,
             }
         })
         .collect();
@@ -173,6 +174,7 @@ pub(super) fn snapshot_with_completions(
                 state_labels,
                 tokens,
                 focused,
+                parent_pane_id: agent.parent_pane_id,
             }
         })
         .collect();

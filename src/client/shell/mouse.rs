@@ -945,7 +945,8 @@ impl ClientShellState {
         if self.popup_terminal_id.is_some() {
             return;
         }
-        if !self.replaying_url_click
+        if self.config.mouse_capture
+            && !self.replaying_url_click
             && self.overlay.is_none()
             && self.mode == ClientShellMode::Terminal
             && mouse.kind == MouseEventKind::Down(MouseButton::Left)
@@ -2027,6 +2028,9 @@ impl ClientShellState {
                             crate::config::AgentPanelSortConfig::Priority
                         }
                         crate::config::AgentPanelSortConfig::Priority => {
+                            crate::config::AgentPanelSortConfig::Tree
+                        }
+                        crate::config::AgentPanelSortConfig::Tree => {
                             crate::config::AgentPanelSortConfig::Spaces
                         }
                     };
@@ -2141,6 +2145,20 @@ impl ClientShellState {
                     return;
                 }
                 if self.handle_endpoint_agent_click(point, outcome) {
+                    return;
+                }
+                let subtree_toggle = self
+                    .hits
+                    .agent_subtree_toggles
+                    .iter()
+                    .find(|(rect, _)| super::contains(*rect, point))
+                    .map(|(_, pane_id)| pane_id.clone());
+                if let Some(pane_id) = subtree_toggle {
+                    let endpoint_id = self.active_endpoint_id.clone();
+                    self.toggle_collapsed_agent_subtree(&endpoint_id, pane_id);
+                    self.agent_scroll = 0;
+                    self.persist_chrome_preferences(outcome);
+                    outcome.repaint = true;
                     return;
                 }
                 let agent_pane_id = self

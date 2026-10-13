@@ -22,6 +22,8 @@ pub struct ApiWorktreeAddRequest {
     pub repo_name: String,
     pub label: Option<String>,
     pub focus: bool,
+    /// Pane that issued the request; becomes the new workspace root pane's parent.
+    pub parent_pane: Option<crate::layout::PaneId>,
     pub respond_to: std::sync::mpsc::Sender<String>,
 }
 

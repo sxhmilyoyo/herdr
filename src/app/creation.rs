@@ -343,6 +343,10 @@ impl App {
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             focused,
+            parent_pane_id: self
+                .state
+                .effective_pane_parent(pane_id)
+                .and_then(|parent| self.state.public_pane_id_anywhere(parent)),
             cwd: ws.tabs[tab_idx]
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),

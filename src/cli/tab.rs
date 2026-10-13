@@ -51,6 +51,13 @@ fn tab_list(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn tab_create(args: &[String]) -> std::io::Result<i32> {
+    let (args, parent) = match super::lineage::take_parent_flags(args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
     let mut workspace_id = None;
     let mut cwd = None;
     let mut focus = false;
@@ -114,7 +121,15 @@ fn tab_create(args: &[String]) -> std::io::Result<i32> {
         }
     }
 
+    let caller_pane_id = match super::lineage::caller_pane_for_request(&parent) {
+        Ok(caller_pane_id) => caller_pane_id,
+        Err(err) => {
+            eprintln!("{err}");
+            return Ok(1);
+        }
+    };
     super::runtime::tab_create(TabCreateParams {
+        caller_pane_id,
         workspace_id,
         cwd,
         focus,

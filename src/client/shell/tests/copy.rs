@@ -1127,6 +1127,7 @@ fn navigator_searches_ancestor_context_and_keeps_split_agents_individually_actio
     second.foreground_cwd = Some("/repo/subproject".into());
     projected.panes.push(second);
     let first_agent = ClientShellAgent {
+        parent_pane_id: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -1840,6 +1841,7 @@ fn copy_mode_survives_mouse_motion_and_parks_across_focus_changes() {
     unfocused.focused_pane_id = Some("pane_2".into());
     unfocused.panes[0].focused = false;
     unfocused.panes.push(ClientShellPane {
+        parent_pane_id: None,
         pane_id: "pane_2".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),

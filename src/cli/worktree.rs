@@ -73,6 +73,13 @@ fn worktree_list(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn worktree_create(args: &[String]) -> std::io::Result<i32> {
+    let (args, parent) = match super::lineage::take_parent_flags(args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
     let mut workspace_id = None;
     let mut cwd = None;
     let mut branch = None;
@@ -154,12 +161,20 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
     }
     if workspace_id.is_some() && cwd.is_some() {
         eprintln!(
-            "usage: herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--trust-repository]"
+            "usage: herdr worktree create [--workspace ID | --cwd PATH] [--branch NAME] [--base REF] [--path PATH] [--label TEXT] [--focus] [--no-focus] [--trust-repository] [--parent ID|--no-parent]"
         );
         return Ok(2);
     }
 
+    let caller_pane_id = match super::lineage::caller_pane_for_request(&parent) {
+        Ok(caller_pane_id) => caller_pane_id,
+        Err(err) => {
+            eprintln!("{err}");
+            return Ok(1);
+        }
+    };
     super::runtime::worktree_create(WorktreeCreateParams {
+        caller_pane_id,
         workspace_id,
         cwd,
         branch,
@@ -172,6 +187,13 @@ fn worktree_create(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn worktree_open(args: &[String]) -> std::io::Result<i32> {
+    let (args, parent) = match super::lineage::take_parent_flags(args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
     let mut workspace_id = None;
     let mut cwd = None;
     let mut path = None;
@@ -244,18 +266,26 @@ fn worktree_open(args: &[String]) -> std::io::Result<i32> {
     }
     if workspace_id.is_some() && cwd.is_some() {
         eprintln!(
-            "usage: herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--trust-repository]"
+            "usage: herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--trust-repository] [--parent ID|--no-parent]"
         );
         return Ok(2);
     }
     if path.is_some() == branch.is_some() {
         eprintln!(
-            "usage: herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--trust-repository]"
+            "usage: herdr worktree open [--workspace ID | --cwd PATH] (--path PATH | --branch NAME) [--label TEXT] [--focus] [--no-focus] [--trust-repository] [--parent ID|--no-parent]"
         );
         return Ok(2);
     }
 
+    let caller_pane_id = match super::lineage::caller_pane_for_request(&parent) {
+        Ok(caller_pane_id) => caller_pane_id,
+        Err(err) => {
+            eprintln!("{err}");
+            return Ok(1);
+        }
+    };
     super::runtime::worktree_open(WorktreeOpenParams {
+        caller_pane_id,
         workspace_id,
         cwd,
         path,

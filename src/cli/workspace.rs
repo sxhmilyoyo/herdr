@@ -39,6 +39,13 @@ fn workspace_list(args: &[String]) -> std::io::Result<i32> {
 }
 
 fn workspace_create(args: &[String]) -> std::io::Result<i32> {
+    let (args, parent) = match super::lineage::take_parent_flags(args) {
+        Ok(parsed) => parsed,
+        Err(message) => {
+            eprintln!("{message}");
+            return Ok(2);
+        }
+    };
     let mut cwd = None;
     let mut focus = false;
     let mut label = None;
@@ -93,7 +100,15 @@ fn workspace_create(args: &[String]) -> std::io::Result<i32> {
         }
     }
 
+    let caller_pane_id = match super::lineage::caller_pane_for_request(&parent) {
+        Ok(caller_pane_id) => caller_pane_id,
+        Err(err) => {
+            eprintln!("{err}");
+            return Ok(1);
+        }
+    };
     super::runtime::workspace_create(WorkspaceCreateParams {
+        caller_pane_id,
         source_workspace_id: None,
         cwd,
         focus,

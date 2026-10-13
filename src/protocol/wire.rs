@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 // ---------------------------------------------------------------------------
 
 /// Current protocol version. Bumped when wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u32 = 22;
+pub const PROTOCOL_VERSION: u32 = 23;
 
 /// Maximum allowed frame payload size (2 MB). Frames larger than this are
 /// rejected to prevent denial-of-service via oversized length prefixes.
@@ -397,29 +397,6 @@ impl ClientPaneInputEvent {
 
 #[cfg(any(windows, test))]
 impl ClientInputEvent {
-    pub(crate) fn from_crossterm(event: crossterm::event::Event) -> Option<Self> {
-        match event {
-            crossterm::event::Event::Key(key) => Some(Self::Key {
-                code: ClientKeyCode::from_crossterm(key.code)?,
-                modifiers: key.modifiers.bits(),
-                kind: ClientKeyKind::from_crossterm(key.kind),
-                repeat_count: 1,
-                generated_text: None,
-                source: ClientKeySource::Synthesized,
-            }),
-            crossterm::event::Event::Mouse(mouse) => Some(Self::Mouse {
-                kind: ClientMouseKind::from_crossterm(mouse.kind)?,
-                column: mouse.column,
-                row: mouse.row,
-                modifiers: mouse.modifiers.bits(),
-            }),
-            crossterm::event::Event::Paste(text) => Some(Self::Paste { text }),
-            crossterm::event::Event::FocusGained => Some(Self::FocusGained),
-            crossterm::event::Event::FocusLost => Some(Self::FocusLost),
-            crossterm::event::Event::Resize(_, _) => None,
-        }
-    }
-
     pub(crate) fn to_raw_input_event(&self) -> crate::raw_input::RawInputEvent {
         match self {
             Self::Key {
@@ -1087,6 +1064,10 @@ pub struct ClientShellPane {
     pub foreground_cwd: Option<String>,
     pub focused: bool,
     pub right_click_passthrough: bool,
+    /// Pane this pane was created from, while that pane is open. Carried as a
+    /// plain `Option` because this struct is also bincode-encoded.
+    #[serde(default)]
+    pub parent_pane_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1106,6 +1087,9 @@ pub struct ClientShellAgent {
     pub state_labels: Vec<(String, String)>,
     pub tokens: Vec<(String, String)>,
     pub focused: bool,
+    /// Pane this agent's pane was created from, while that pane is open.
+    #[serde(default)]
+    pub parent_pane_id: Option<String>,
 }
 
 /// Origin-relative geometry for one pane in a rendered pane surface.
@@ -2225,11 +2209,7 @@ mod tests {
         };
         assert!(key.is_windows_dead_key());
         assert_eq!(key.windows_record(), None);
-        assert!(crate::input::encode_terminal_key(
-            key,
-            crate::input::KeyboardProtocol::Kitty { flags: 1 },
-        )
-        .is_empty());
+        assert!(crate::pane::test_encode_key_for_app(b"\x1b[>1u", key).is_empty());
     }
 
     #[tokio::test]
@@ -2307,10 +2287,7 @@ mod tests {
         };
 
         assert!(roundtripped.has_physical_identity());
-        let encoded = crate::input::encode_terminal_key(
-            roundtripped,
-            crate::input::KeyboardProtocol::Kitty { flags: 8 },
-        );
+        let encoded = crate::pane::test_encode_key_for_app(b"\x1b[>8u", roundtripped);
         assert_ne!(encoded, b"/");
         assert!(encoded.starts_with(b"\x1b["));
     }
@@ -2872,6 +2849,7 @@ mod tests {
                 agent_status: crate::api::schema::AgentStatus::Idle,
             }],
             panes: vec![ClientShellPane {
+                parent_pane_id: None,
                 pane_id: "w1:p1".into(),
                 workspace_id: "w1".into(),
                 tab_id: "w1:t1".into(),

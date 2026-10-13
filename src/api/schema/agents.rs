@@ -212,6 +212,9 @@ pub struct AgentInfo {
     pub tab_id: String,
     pub pane_id: String,
     pub focused: bool,
+    /// Pane this pane was created from, while that pane is still open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "super::is_false")]
     pub launch_pending: bool,
     #[serde(default, skip_serializing_if = "super::is_false")]

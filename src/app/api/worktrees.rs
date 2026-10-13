@@ -76,6 +76,7 @@ impl App {
         if entry.is_bare || entry.is_prunable {
             return encode_error(id, "worktree_not_found", "worktree cannot be opened");
         }
+        let parent_pane = self.parent_pane_from_caller(params.caller_pane_id.as_deref());
         let canonical_path = crate::worktree::canonical_or_original(&entry.path);
         let target_matches =
             crate::workspace::git_space_metadata(&entry.path).is_some_and(|space| {
@@ -117,6 +118,14 @@ impl App {
                 Err(err) => return encode_error(id, "worktree_open_failed", err.to_string()),
             }
         };
+        if created_workspace {
+            let root_pane = self.state.workspaces[ws_idx].tabs[0].root_pane;
+            self.adopt_new_pane(root_pane, parent_pane);
+            if created_source_workspace && !defer_source_created_event {
+                // The source workspace's creation events were already emitted.
+                self.emit_pane_updated(ws_idx, root_pane);
+            }
+        }
         self.mark_worktree_membership(
             &source,
             ws_idx,
@@ -1138,6 +1147,7 @@ mod tests {
         app.handle_api_worktree_add_finished(WorktreeAddResult {
             path: checkout.clone(),
             api_request: Some(ApiWorktreeAddRequest {
+                parent_pane: None,
                 id: "req".into(),
                 operation_id: 9,
                 checkout_key,
@@ -2440,6 +2450,7 @@ mod tests {
             Request {
                 id: "req".into(),
                 method: crate::api::schema::Method::WorktreeCreate(WorktreeCreateParams {
+                    caller_pane_id: None,
                     workspace_id: None,
                     cwd: Some(repo.display().to_string()),
                     branch: Some("worktree/create-remove-in-flight".into()),

@@ -48,6 +48,7 @@ impl App {
         let Some((ws_idx, target_pane_id)) = target else {
             return encode_error(id, "pane_not_found", "pane not found");
         };
+        let parent_pane = self.parent_pane_from_caller(params.caller_pane_id.as_deref());
         let extra_env = match super::env::normalize_launch_env(params.env) {
             Ok(env) => env,
             Err((code, message)) => return encode_error(id, &code, message),
@@ -130,6 +131,7 @@ impl App {
         self.state
             .terminals
             .insert(new_pane.terminal.id.clone(), new_pane.terminal);
+        self.adopt_new_pane(new_pane.pane_id, parent_pane);
         self.schedule_session_save();
         let pane = self.pane_info(ws_idx, new_pane.pane_id).unwrap();
         self.emit_event(EventEnvelope {
@@ -1946,6 +1948,9 @@ impl App {
             Ok(bytes) => bytes,
             Err(key) => return encode_error(id, "invalid_key", format!("unsupported key {key}")),
         };
+        if let Err(err) = runtime.validate_input_submission(&bytes) {
+            return encode_error(id, "pane_send_failed", err.to_string());
+        }
         if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
             return encode_error(id, "pane_send_failed", err.to_string());
         }
@@ -2025,6 +2030,7 @@ impl App {
                 self.emit_layout_updated_event(ws_idx, tab_idx);
             }
         }
+        self.emit_pending_pane_parent_updates();
 
         Ok(())
     }
@@ -2044,7 +2050,7 @@ impl App {
             Ok(encoded_keys) => encoded_keys,
             Err(key) => return encode_error(id, "invalid_key", format!("unsupported key {key}")),
         };
-        for bytes in encoded_keys {
+        for bytes in encoded_keys.into_iter().filter(|bytes| !bytes.is_empty()) {
             if let Err(err) = runtime.try_send_bytes(Bytes::from(bytes)) {
                 return encode_error(id, "pane_send_failed", err.to_string());
             }
@@ -2835,7 +2841,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn api_pane_send_keys_preserves_super_chord_in_legacy_pane() {
+    async fn api_pane_send_keys_does_not_type_super_chord_into_legacy_pane() {
         let (mut app, pane_id, mut rx) = app_with_send_key_runtime(1);
         let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
         assert_eq!(
@@ -2856,11 +2862,38 @@ mod tests {
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(success.id, "req");
         assert_eq!(success.result, ResponseResult::Ok {});
+        // Neither a bare "c" (#3710) nor a Kitty report the shell prints (#4356).
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn api_pane_send_keys_reports_super_chord_to_kitty_pane() {
+        let (mut app, pane_id) = app_with_test_workspace();
+        let internal_pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let (runtime, mut rx) =
+            crate::terminal::TerminalRuntime::test_with_channel_and_scrollback_bytes(
+                80,
+                24,
+                0,
+                b"\x1b[>1u",
+                1,
+            );
+        app.state.insert_test_runtime(internal_pane_id, runtime);
+
+        let response = app.handle_api_request(crate::api::schema::Request {
+            id: "req".into(),
+            method: crate::api::schema::Method::PaneSendKeys(PaneSendKeysParams {
+                pane_id,
+                keys: vec!["cmd+c".into()],
+            }),
+        });
+
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.result, ResponseResult::Ok {});
         assert_eq!(
             rx.try_recv().unwrap(),
             bytes::Bytes::from_static(b"\x1b[99;9u")
         );
-        assert!(rx.try_recv().is_err());
     }
 
     #[tokio::test]
@@ -3050,6 +3083,100 @@ mod tests {
         let success: SuccessResponse = serde_json::from_str(&response).unwrap();
         assert_eq!(success.id, "req");
         assert!(app.state.workspaces.is_empty());
+    }
+
+    #[test]
+    fn api_pane_lineage_resolves_callers_and_reports_parent_ids() {
+        let mut app = app_with_linked_worktree();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let child = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        let root_public = app.public_pane_id(0, root).unwrap();
+
+        // Unknown callers are advisory: no parent, no failure.
+        assert_eq!(app.parent_pane_from_caller(Some("w9:p9")), None);
+        assert_eq!(app.parent_pane_from_caller(None), None);
+        let parent = app.parent_pane_from_caller(Some(root_public.as_str()));
+        assert_eq!(parent, Some(root));
+
+        app.adopt_new_pane(child, parent);
+        let child_info = app.pane_info(0, child).expect("child pane info");
+        assert_eq!(
+            child_info.parent_pane_id.as_deref(),
+            Some(root_public.as_str())
+        );
+        assert!(app.pane_info(0, root).unwrap().parent_pane_id.is_none());
+
+        // A live agent name resolves to its pane too.
+        let root_terminal_id = app.state.workspaces[0].terminal_id(root).unwrap().clone();
+        let root_terminal = app.state.terminals.get_mut(&root_terminal_id).unwrap();
+        root_terminal.agent_name = Some("dispatcher".into());
+        root_terminal.detected_agent = Some(crate::detect::Agent::Claude);
+        assert_eq!(
+            app.parent_pane_from_caller(Some("dispatcher")),
+            Some(root),
+            "agent names resolve like agent commands do"
+        );
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
+    fn api_pane_close_promotes_children_and_emits_pane_updated() {
+        let mut app = app_with_linked_worktree();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let child = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        let grandchild = app.state.workspaces[0].test_split(ratatui::layout::Direction::Vertical);
+        app.state.ensure_test_terminals();
+        app.adopt_new_pane(child, Some(root));
+        app.adopt_new_pane(grandchild, Some(child));
+        let root_public = app.public_pane_id(0, root).unwrap();
+        let child_public = app.public_pane_id(0, child).unwrap();
+        let grandchild_public = app.public_pane_id(0, grandchild).unwrap();
+        assert_eq!(
+            app.pane_info(0, grandchild)
+                .unwrap()
+                .parent_pane_id
+                .as_deref(),
+            Some(child_public.as_str())
+        );
+
+        let response = app.handle_pane_close(
+            "req".into(),
+            PaneTarget {
+                pane_id: child_public,
+            },
+        );
+        let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+        assert_eq!(success.id, "req");
+
+        assert_eq!(
+            app.pane_info(0, grandchild)
+                .unwrap()
+                .parent_pane_id
+                .as_deref(),
+            Some(root_public.as_str()),
+            "the grandchild is promoted to the closed pane's parent"
+        );
+        assert!(app.state.pending_pane_parent_updates.is_empty());
+        let promoted = app
+            .event_hub
+            .events_after(0)
+            .into_iter()
+            .filter_map(|(_, envelope)| match envelope.data {
+                EventData::PaneUpdated { pane } => Some(pane),
+                _ => None,
+            })
+            .find(|pane| pane.pane_id == grandchild_public)
+            .expect("pane.updated for the promoted child");
+        assert_eq!(
+            promoted.parent_pane_id.as_deref(),
+            Some(root_public.as_str())
+        );
+        app.state.assert_invariants_for_test();
     }
 
     #[test]

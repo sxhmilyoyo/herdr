@@ -61,6 +61,8 @@ impl ClientShellState {
             collapsed_endpoints: &self.collapsed_endpoints,
             collapsed_groups: &self.collapsed_groups,
             remote_collapsed_groups: &self.remote_collapsed_groups,
+            collapsed_agent_subtrees: &self.collapsed_agent_subtrees,
+            remote_collapsed_agent_subtrees: &self.remote_collapsed_agent_subtrees,
             workspace_scroll: &mut self.workspace_scroll,
             agent_scroll: &mut self.agent_scroll,
             tab_scroll: &mut self.tab_scroll,
@@ -217,6 +219,8 @@ impl ClientShellState {
                 collapsed_endpoints: &self.collapsed_endpoints,
                 collapsed_groups: &self.collapsed_groups,
                 remote_collapsed_groups: &self.remote_collapsed_groups,
+                collapsed_agent_subtrees: &self.collapsed_agent_subtrees,
+                remote_collapsed_agent_subtrees: &self.remote_collapsed_agent_subtrees,
                 workspace_scroll: &mut self.workspace_scroll,
                 agent_scroll: &mut self.agent_scroll,
                 tab_scroll: &mut self.tab_scroll,
@@ -607,6 +611,10 @@ impl ClientShellState {
                 &self.endpoints,
                 &self.active_endpoint_id,
                 &self.config,
+                super::agent_sidebar::AgentCollapse {
+                    local: &self.collapsed_agent_subtrees,
+                    remote: &self.remote_collapsed_agent_subtrees,
+                },
                 self.navigate_workspace_id
                     .as_ref()
                     .filter(|_| valid_navigation_target),

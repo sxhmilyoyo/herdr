@@ -51,6 +51,7 @@ impl App {
             focus,
             label,
             env,
+            caller_pane_id,
         } = params;
         let ws_idx = if let Some(workspace_id) = workspace_id {
             let Some(ws_idx) = self.parse_workspace_id(&workspace_id) else {
@@ -62,6 +63,7 @@ impl App {
         } else {
             return encode_error(id, "workspace_not_found", "no active workspace");
         };
+        let parent_pane = self.parent_pane_from_caller(caller_pane_id.as_deref());
         let cwd = cwd.map(PathBuf::from).unwrap_or_else(|| {
             self.resolve_new_terminal_cwd(self.focused_pane_cwd_in_workspace(ws_idx))
         });
@@ -97,6 +99,10 @@ impl App {
                 self.state.terminals.insert(terminal.id.clone(), terminal);
                 self.state.remove_alias_shadowed_by_new_pane(
                     self.state.workspaces[ws_idx].tabs[tab_idx].root_pane,
+                );
+                self.adopt_new_pane(
+                    self.state.workspaces[ws_idx].tabs[tab_idx].root_pane,
+                    parent_pane,
                 );
                 if let Some(label) = label {
                     let workspace_id = self.state.workspaces[ws_idx].id.clone();
@@ -265,6 +271,7 @@ impl App {
                     workspace: Some(workspace),
                 },
             });
+            self.emit_pending_pane_parent_updates();
             return encode_success(id, ResponseResult::Ok {});
         }
 
@@ -289,6 +296,7 @@ impl App {
                 workspace_id,
             },
         });
+        self.emit_pending_pane_parent_updates();
 
         encode_success(id, ResponseResult::Ok {})
     }
@@ -460,6 +468,7 @@ mod tests {
         let response = app.handle_tab_create(
             "req".into(),
             TabCreateParams {
+                caller_pane_id: None,
                 workspace_id: None,
                 cwd: None,
                 focus: false,

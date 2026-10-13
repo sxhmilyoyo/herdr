@@ -87,6 +87,7 @@ impl ClientShellState {
                         self.push_endpoint_method(
                             crate::api::schema::Method::WorkspaceCreate(
                                 crate::api::schema::WorkspaceCreateParams {
+                                    caller_pane_id: None,
                                     source_workspace_id: self.workspace_action_id(),
                                     cwd: None,
                                     focus: true,
@@ -110,6 +111,16 @@ impl ClientShellState {
                         self.request_workspace_close(workspace_id, None, outcome);
                     }
                     outcome.repaint = true;
+                    return;
+                }
+                if action == crate::input::KeybindAction::ClosePane {
+                    if let Some(pane_id) = self
+                        .snapshot
+                        .as_deref()
+                        .and_then(|snapshot| snapshot.focused_pane_id.clone())
+                    {
+                        self.request_pane_close(pane_id, outcome);
+                    }
                     return;
                 }
                 if action == crate::input::KeybindAction::CloseTab {
@@ -660,7 +671,8 @@ impl ClientShellState {
                     event.kind
                         == crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left)
                 });
-                let replay = (self.mode == ClientShellMode::Terminal
+                let replay = (self.config.mouse_capture
+                    && self.mode == ClientShellMode::Terminal
                     && self.overlay.is_none()
                     && self
                         .hits
@@ -688,7 +700,7 @@ impl ClientShellState {
                     Ok(crate::api::schema::ResponseResult::PaneLinkActivated {
                         url: Some(url),
                         handled: false,
-                    }) if crate::app::actions::safe_web_url(&url).is_some() => {
+                    }) if crate::app::actions::safe_web_url(&url).is_some() && replay.is_some() => {
                         self.url_click_consumes_until_up = completed_before_release;
                         (false, vec![ClientShellAction::OpenSafeWebUrl(url)])
                     }
@@ -698,6 +710,10 @@ impl ClientShellState {
                     Ok(_) => {
                         self.set_endpoint_error("endpoint returned an unexpected link result");
                         (true, replay_action(replay))
+                    }
+                    Err(error) if error.code.as_deref() == Some("plugin_link_failed") => {
+                        self.url_click_consumes_until_up = completed_before_release;
+                        (true, Vec::new())
                     }
                     Err(error)
                         if matches!(
@@ -879,6 +895,7 @@ impl ClientShellState {
                 let agents = super::agent_sidebar::ordered_agent_pane_ids(
                     snapshot,
                     self.config.agent_panel_sort,
+                    self.collapsed_agent_subtrees_for_endpoint(&self.active_endpoint_id),
                 );
                 Some(Method::PaneFocus(PaneTarget {
                     pane_id: agents.get(index)?.clone(),
@@ -888,6 +905,7 @@ impl ClientShellState {
                 let agents = super::agent_sidebar::ordered_agent_pane_ids(
                     snapshot,
                     self.config.agent_panel_sort,
+                    self.collapsed_agent_subtrees_for_endpoint(&self.active_endpoint_id),
                 );
                 if agents.is_empty() {
                     return None;
@@ -1005,6 +1023,7 @@ impl ClientShellState {
             }
             KeybindAction::NewTab if !self.config.prompt_new_tab_name => {
                 Some(Method::TabCreate(TabCreateParams {
+                    caller_pane_id: None,
                     workspace_id: Some(focused_workspace),
                     cwd: None,
                     focus: true,
@@ -1032,6 +1051,7 @@ impl ClientShellState {
             })),
             KeybindAction::SplitVertical | KeybindAction::SplitHorizontal => {
                 Some(Method::PaneSplit(PaneSplitParams {
+                    caller_pane_id: None,
                     workspace_id: Some(focused_workspace),
                     target_pane_id: focused_pane,
                     direction: if action == KeybindAction::SplitVertical {
@@ -1046,9 +1066,6 @@ impl ClientShellState {
                     env: Default::default(),
                 }))
             }
-            KeybindAction::ClosePane => Some(Method::PaneClose(PaneTarget {
-                pane_id: focused_pane.clone()?,
-            })),
             KeybindAction::CyclePaneNext | KeybindAction::CyclePanePrevious => {
                 let focused_tab = focused_tab?;
                 let panes = snapshot

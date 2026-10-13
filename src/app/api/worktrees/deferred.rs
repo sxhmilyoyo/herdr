@@ -122,6 +122,7 @@ impl App {
             return;
         }
         let base = params.base.unwrap_or_else(|| "HEAD".into());
+        let parent_pane = self.parent_pane_from_caller(params.caller_pane_id.as_deref());
         let source = match self.resolve_worktree_source(params.workspace_id, params.cwd) {
             Ok(source) => source,
             Err(err) => {
@@ -188,6 +189,7 @@ impl App {
             repo_name: source.repo_name,
             label: params.label,
             focus: params.focus,
+            parent_pane,
             respond_to,
         };
         let source_checkout_path = api_request.source_checkout_path.clone();
@@ -472,6 +474,10 @@ impl App {
                 }
             };
 
+        if created_workspace {
+            let root_pane = self.state.workspaces[ws_idx].tabs[0].root_pane;
+            self.adopt_new_pane(root_pane, api.parent_pane);
+        }
         self.mark_worktree_membership(
             &source,
             ws_idx,

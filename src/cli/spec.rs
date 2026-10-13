@@ -206,7 +206,8 @@ fn workspace_command() -> Command {
                 .arg(option("label", "TEXT"))
                 .arg(env_option())
                 .arg(flag("focus"))
-                .arg(flag("no-focus")),
+                .arg(flag("no-focus"))
+                .args(parent_args()),
         )
         .subcommand(id_command("get", "workspace_id", "Show a workspace"))
         .subcommand(id_command("focus", "workspace_id", "Focus a workspace"))
@@ -250,7 +251,8 @@ fn worktree_command() -> Command {
                 .arg(option("label", "TEXT"))
                 .arg(flag("focus"))
                 .arg(flag("no-focus"))
-                .arg(flag("trust-repository")),
+                .arg(flag("trust-repository"))
+                .args(parent_args()),
         )
         .subcommand(
             Command::new("open")
@@ -262,7 +264,8 @@ fn worktree_command() -> Command {
                 .arg(option("label", "TEXT"))
                 .arg(flag("focus"))
                 .arg(flag("no-focus"))
-                .arg(flag("trust-repository")),
+                .arg(flag("trust-repository"))
+                .args(parent_args()),
         )
         .subcommand(
             Command::new("remove")
@@ -289,7 +292,8 @@ fn tab_command() -> Command {
                 .arg(option("label", "TEXT"))
                 .arg(env_option())
                 .arg(flag("focus"))
-                .arg(flag("no-focus")),
+                .arg(flag("no-focus"))
+                .args(parent_args()),
         )
         .subcommand(id_command("get", "tab_id", "Show a tab"))
         .subcommand(id_command("focus", "tab_id", "Focus a tab"))
@@ -557,7 +561,8 @@ fn pane_command() -> Command {
                 .arg(env_option())
                 .arg(option("right-click", "TARGET").value_parser(["herdr", "pane"]))
                 .arg(flag("focus"))
-                .arg(flag("no-focus")),
+                .arg(flag("no-focus"))
+                .args(parent_args()),
         )
         .subcommand(
             Command::new("swap")
@@ -912,6 +917,16 @@ fn plugin_command() -> Command {
 
 fn current_pane_args() -> [Arg; 2] {
     [option("pane", "ID"), flag("current")]
+}
+
+fn parent_args() -> [Arg; 2] {
+    [
+        option("parent", "ID").help(
+            "Record this pane id or live agent name as the new pane's parent \
+             (default: the calling pane from HERDR_PANE_ID)",
+        ),
+        flag("no-parent").help("Do not record a parent pane"),
+    ]
 }
 
 fn integration_target_arg() -> Arg {
@@ -1304,6 +1319,32 @@ mod tests {
         let cmd = super::command();
         let pane_read = command_path(&cmd, &["pane", "read"]);
         assert!(has_option(pane_read, "raw"));
+    }
+
+    #[test]
+    fn spec_models_parent_flags_on_every_creating_command() {
+        let cmd = super::command();
+        for path in [
+            ["pane", "split"],
+            ["tab", "create"],
+            ["workspace", "create"],
+            ["worktree", "create"],
+            ["worktree", "open"],
+        ] {
+            let command = command_path(&cmd, &path);
+            assert!(has_option(command, "parent"), "{path:?} lacks --parent");
+            assert!(
+                has_option(command, "no-parent"),
+                "{path:?} lacks --no-parent"
+            );
+        }
+        for path in [["pane", "move"], ["pane", "swap"], ["worktree", "remove"]] {
+            let command = command_path(&cmd, &path);
+            assert!(
+                !has_option(command, "parent"),
+                "{path:?} must not take --parent"
+            );
+        }
     }
 
     #[test]

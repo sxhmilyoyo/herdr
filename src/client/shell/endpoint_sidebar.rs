@@ -212,6 +212,10 @@ pub(super) fn render_collapsed(
         state.endpoints,
         state.active_endpoint_id,
         config,
+        super::agent_sidebar::AgentCollapse {
+            local: state.collapsed_agent_subtrees,
+            remote: state.remote_collapsed_agent_subtrees,
+        },
         hits,
     );
     hits.sidebar_toggle = if area.is_empty() || workspace_area.width == 0 {
@@ -561,6 +565,10 @@ pub(super) fn render_expanded(
         state.active_endpoint_id,
         config,
         state.agent_scroll,
+        super::agent_sidebar::AgentCollapse {
+            local: state.collapsed_agent_subtrees,
+            remote: state.remote_collapsed_agent_subtrees,
+        },
         hits,
     );
     hits.sidebar_toggle = Rect::new(
