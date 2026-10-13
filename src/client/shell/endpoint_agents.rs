@@ -74,7 +74,15 @@ pub(super) fn render_expanded(
         hits,
         |row| row.agent.rows.len(),
         |buffer, rect, row, hits| {
-            super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config);
+            if let Some(toggle) =
+                super::agent_sidebar::render_agent_row(buffer, rect, &row.agent, config)
+            {
+                hits.endpoint_agent_subtree_toggles.push((
+                    toggle,
+                    row.endpoint_id.clone(),
+                    row.agent.pane_id.clone(),
+                ));
+            }
             if row.stale {
                 buffer.set_style(
                     rect,
@@ -173,7 +181,7 @@ fn agent_rows(
     .into_iter()
     .filter_map(|row| {
         let key = (row.endpoint.endpoint_id.clone(), row.agent.pane_id.clone());
-        let mut agent = rendered_rows.remove(&key)?;
+        let mut agent = rendered_rows.remove(&key)?.place(&row.entry);
         agent.focused &= row.endpoint.endpoint_id == active_endpoint_id;
         Some(EndpointAgentRow {
             endpoint_id: row.endpoint.endpoint_id.clone(),

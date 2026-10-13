@@ -46,6 +46,8 @@ pub(super) struct AggregateAgentRow<'a> {
     pub(super) endpoint: CachedEndpointSnapshot<'a>,
     pub(super) agent: &'a ClientShellAgent,
     pub(super) recency: u64,
+    /// Where the agent sits in its machine's tree; flat outside the `tree` sort.
+    pub(super) entry: super::agent_sidebar::OrderedAgent,
 }
 
 pub(super) struct AggregateAgentTarget {
@@ -84,19 +86,24 @@ pub(super) fn aggregate_agent_rows<'a>(
     if let Some(Ok(view)) = active_view {
         let mut rows = cached_endpoint_snapshots(endpoints)
             .flat_map(|endpoint| {
-                endpoint
-                    .snapshot
-                    .agents
-                    .iter()
-                    .map(move |agent| AggregateAgentRow {
-                        recency: endpoint
-                            .agent_recency
-                            .get(&agent.pane_id)
-                            .copied()
-                            .unwrap_or_default(),
-                        endpoint,
-                        agent,
-                    })
+                // The tree sort nests within a machine unless a plugin view is
+                // active; views stay flat. The other sorts keep server order
+                // here, and `Priority` sorts across machines below.
+                let entries = if sort == crate::config::AgentPanelSortConfig::Tree && view.is_none()
+                {
+                    super::agent_sidebar::agent_tree_entries(
+                        &endpoint.snapshot.agents,
+                        collapse.for_endpoint(endpoint.endpoint_id),
+                    )
+                } else {
+                    endpoint
+                        .snapshot
+                        .agents
+                        .iter()
+                        .map(|agent| super::agent_sidebar::OrderedAgent::flat(&agent.pane_id))
+                        .collect()
+                };
+                endpoint_rows(endpoint, entries)
             })
             .collect::<Vec<_>>();
         if let Some(view) = view {
@@ -133,32 +140,42 @@ pub(super) fn aggregate_agent_rows<'a>(
 
     let mut rows = cached_endpoint_snapshots(endpoints)
         .flat_map(|endpoint| {
-            super::agent_sidebar::ordered_agent_pane_ids(
-                endpoint.snapshot,
-                sort,
-                collapse.for_endpoint(endpoint.endpoint_id),
+            endpoint_rows(
+                endpoint,
+                super::agent_sidebar::ordered_agent_entries(
+                    endpoint.snapshot,
+                    sort,
+                    collapse.for_endpoint(endpoint.endpoint_id),
+                ),
             )
-            .into_iter()
-            .filter_map(move |pane_id| {
-                let agent = endpoint
-                    .snapshot
-                    .agents
-                    .iter()
-                    .find(|agent| agent.pane_id == pane_id)?;
-                Some(AggregateAgentRow {
-                    recency: endpoint
-                        .agent_recency
-                        .get(&pane_id)
-                        .copied()
-                        .unwrap_or_default(),
-                    endpoint,
-                    agent,
-                })
-            })
         })
         .collect::<Vec<_>>();
     sort_aggregate_rows(&mut rows, sort);
     rows
+}
+
+/// One machine's agents as aggregate rows, in the order of `entries`.
+fn endpoint_rows<'a>(
+    endpoint: CachedEndpointSnapshot<'a>,
+    entries: Vec<super::agent_sidebar::OrderedAgent>,
+) -> impl Iterator<Item = AggregateAgentRow<'a>> {
+    entries.into_iter().filter_map(move |entry| {
+        let agent = endpoint
+            .snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.pane_id == entry.pane_id)?;
+        Some(AggregateAgentRow {
+            recency: endpoint
+                .agent_recency
+                .get(&entry.pane_id)
+                .copied()
+                .unwrap_or_default(),
+            endpoint,
+            agent,
+            entry,
+        })
+    })
 }
 
 fn sort_aggregate_rows(

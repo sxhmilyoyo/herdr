@@ -2144,6 +2144,21 @@ impl ClientShellState {
                     self.tab_press = Some(tab_press);
                     return;
                 }
+                // A fold marker sits inside the agent row it belongs to, so it
+                // has to win over the row click.
+                let endpoint_toggle = self
+                    .hits
+                    .endpoint_agent_subtree_toggles
+                    .iter()
+                    .find(|(rect, _, _)| super::contains(*rect, point))
+                    .map(|(_, endpoint_id, pane_id)| (endpoint_id.clone(), pane_id.clone()));
+                if let Some((endpoint_id, pane_id)) = endpoint_toggle {
+                    self.toggle_collapsed_agent_subtree(&endpoint_id, pane_id);
+                    self.agent_scroll = 0;
+                    self.persist_chrome_preferences(outcome);
+                    outcome.repaint = true;
+                    return;
+                }
                 if self.handle_endpoint_agent_click(point, outcome) {
                     return;
                 }
