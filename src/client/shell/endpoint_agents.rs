@@ -181,7 +181,10 @@ fn agent_rows(
     .into_iter()
     .filter_map(|row| {
         let key = (row.endpoint.endpoint_id.clone(), row.agent.pane_id.clone());
-        let mut agent = rendered_rows.remove(&key)?.place(&row.entry);
+        let mut agent = rendered_rows
+            .remove(&key)?
+            .place(&row.entry)
+            .hide_shared_labels(row.endpoint.snapshot, &row.entry);
         agent.focused &= row.endpoint.endpoint_id == active_endpoint_id;
         Some(EndpointAgentRow {
             endpoint_id: row.endpoint.endpoint_id.clone(),

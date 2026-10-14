@@ -3041,7 +3041,8 @@ fn aggregate_tree_sort_nests_each_machine_separately() {
     use crate::config::AgentSidebarToken;
     let mut config = Config::default();
     config.ui.agent_panel_sort = crate::config::AgentPanelSortConfig::Tree;
-    config.ui.sidebar.agents.rows = vec![vec![AgentSidebarToken::Agent]];
+    config.ui.sidebar.agents.rows =
+        vec![vec![AgentSidebarToken::Workspace, AgentSidebarToken::Agent]];
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
     let profile = remote_profile();
     let remote = ClientEndpointId::Ssh(profile.id.clone());
@@ -3122,6 +3123,23 @@ fn aggregate_tree_sort_nests_each_machine_separately() {
     assert!(
         child_line.contains("└─"),
         "child carries a guide: {child_line}"
+    );
+    let child_entry = child_line
+        .split('│')
+        .next()
+        .unwrap_or(child_line)
+        .trim_end();
+    assert!(
+        child_entry.ends_with("└─ child"),
+        "a child skips the workspace label it shares with its parent: {child_line}"
+    );
+    let parent_line = text
+        .lines()
+        .find(|line| line.contains("parent"))
+        .expect("parent row");
+    assert!(
+        parent_line.contains("client-shell · parent"),
+        "the parent keeps its workspace label: {parent_line}"
     );
     let local_line = text
         .lines()

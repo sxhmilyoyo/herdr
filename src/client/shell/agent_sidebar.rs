@@ -41,6 +41,44 @@ impl AgentRow {
         self.hidden_status = entry.hidden_status;
         self
     }
+
+    /// Drop the workspace and tab labels a child shares with the agent it
+    /// nests under: the parent's entry already says where the child runs. A
+    /// layout line left without values disappears, as for any missing token.
+    pub(super) fn hide_shared_labels(
+        mut self,
+        snapshot: &ClientShellSnapshot,
+        entry: &OrderedAgent,
+    ) -> Self {
+        if entry.depth == 0 {
+            return self;
+        }
+        let find = |pane_id: &str| {
+            snapshot
+                .agents
+                .iter()
+                .find(|agent| agent.pane_id == pane_id)
+        };
+        let Some(child) = find(&entry.pane_id) else {
+            return self;
+        };
+        let Some(parent) = child.parent_pane_id.as_deref().and_then(find) else {
+            return self;
+        };
+        if parent.workspace_id != child.workspace_id {
+            return self;
+        }
+        let same_tab = parent.tab_id == child.tab_id;
+        for tokens in &mut self.rows {
+            tokens.retain(|token| match token.kind {
+                crate::ui::ResolvedTokenKind::Workspace(_) => false,
+                crate::ui::ResolvedTokenKind::Tab(_) => !same_tab,
+                _ => true,
+            });
+        }
+        self.rows.retain(|tokens| !tokens.is_empty());
+        self
+    }
 }
 
 /// Collapsed agent subtrees per endpoint, as renderers and navigation see them.
@@ -487,7 +525,7 @@ pub(super) fn agent_rows(
         .into_iter()
         .filter_map(|entry| {
             let row = agent_row(snapshot, &entry.pane_id, config, machine)?;
-            Some(row.place(&entry))
+            Some(row.place(&entry).hide_shared_labels(snapshot, &entry))
         })
         .collect()
 }
