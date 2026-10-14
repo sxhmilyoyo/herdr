@@ -1826,6 +1826,116 @@ fn tree_sort_nests_children_under_parents_across_workspaces() {
 }
 
 #[test]
+fn tree_sort_hides_labels_a_child_shares_with_its_parent() {
+    use crate::config::AgentSidebarToken;
+    let mut projected = snapshot();
+    // Short labels keep every line inside the sidebar width. A second tab in
+    // the first workspace makes tab labels visible there; a second workspace
+    // hosts a cousin.
+    projected.workspaces[0].label = "ws".into();
+    let mut second_tab = projected.tabs[0].clone();
+    second_tab.tab_id = "tab_2".into();
+    second_tab.label = "2".into();
+    second_tab.focused = false;
+    projected.tabs.push(second_tab);
+    let mut second_workspace = projected.workspaces[0].clone();
+    second_workspace.workspace_id = "ws_2".into();
+    second_workspace.active_tab_id = "tab_3".into();
+    second_workspace.label = "w2".into();
+    second_workspace.focused = false;
+    projected.workspaces.push(second_workspace);
+    let mut third_tab = projected.tabs[0].clone();
+    third_tab.tab_id = "tab_3".into();
+    third_tab.workspace_id = "ws_2".into();
+    third_tab.focused = false;
+    projected.tabs.push(third_tab);
+    for (pane_id, workspace_id, tab_id) in [
+        ("pane_2", "ws_1", "tab_1"),
+        ("pane_3", "ws_1", "tab_2"),
+        ("pane_4", "ws_2", "tab_3"),
+        ("pane_5", "ws_1", "tab_1"),
+        ("pane_6", "ws_1", "tab_1"),
+    ] {
+        let mut pane = projected.panes[0].clone();
+        pane.pane_id = pane_id.into();
+        pane.workspace_id = workspace_id.into();
+        pane.tab_id = tab_id.into();
+        pane.focused = false;
+        projected.panes.push(pane);
+    }
+    projected.agents = vec![
+        tree_agent("pane_1", "ws_1", "tab_1", "root", None),
+        tree_agent("pane_2", "ws_1", "tab_1", "same", Some("pane_1")),
+        tree_agent("pane_3", "ws_1", "tab_2", "moved", Some("pane_1")),
+        tree_agent("pane_4", "ws_2", "tab_3", "far", Some("pane_1")),
+        tree_agent("pane_5", "ws_1", "tab_1", "kid", Some("pane_2")),
+        tree_agent("pane_6", "ws_1", "tab_1", "lone", Some("pane_missing")),
+    ];
+    let one_line = vec![vec![
+        AgentSidebarToken::Workspace,
+        AgentSidebarToken::Tab,
+        AgentSidebarToken::Agent,
+    ]];
+    // The sidebar part of the line that names an agent, without the fold
+    // marker a parent carries at the right edge.
+    let entry = |text: &str, name: &str| -> String {
+        let row = text
+            .lines()
+            .find(|line| line.contains(name))
+            .unwrap_or_else(|| panic!("{name} row; frame: {text}"));
+        row.split('│')
+            .next()
+            .unwrap_or(row)
+            .trim_end()
+            .trim_end_matches(['▾', ' '])
+            .to_owned()
+    };
+
+    let mut config = tree_sort_config();
+    config.ui.sidebar.agents.rows = one_line.clone();
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(projected.clone()));
+    state.set_pane_surface(surface());
+    let text = frame_text(&mut state);
+    assert!(
+        entry(&text, "root").ends_with("ws · 1 · root"),
+        "a root keeps both labels; frame: {text}"
+    );
+    assert!(
+        entry(&text, "same").ends_with("├─ same"),
+        "same workspace and tab as the parent: neither label; frame: {text}"
+    );
+    assert!(
+        entry(&text, "kid").ends_with("└─ kid"),
+        "compared with its own parent, not the root; frame: {text}"
+    );
+    assert!(
+        entry(&text, "moved").ends_with("├─ 2 · moved"),
+        "same workspace, other tab: only the tab label; frame: {text}"
+    );
+    assert!(
+        entry(&text, "far").ends_with("└─ w2 · far"),
+        "another workspace: both labels; frame: {text}"
+    );
+    assert!(
+        entry(&text, "lone").ends_with("ws · 1 · lone"),
+        "a child drawn as a root keeps its labels; frame: {text}"
+    );
+
+    // The flat sorts never hide a label.
+    let mut flat = Config::default();
+    flat.ui.sidebar.agents.rows = one_line;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&flat));
+    state.set_snapshot(Box::new(projected));
+    state.set_pane_surface(surface());
+    let text = frame_text(&mut state);
+    assert!(
+        entry(&text, "same").ends_with("ws · 1 · same"),
+        "spaces sort shows every label; frame: {text}"
+    );
+}
+
+#[test]
 fn tree_sort_clamps_indentation_at_the_render_depth_limit() {
     let mut projected = snapshot();
     let mut agents = Vec::new();
