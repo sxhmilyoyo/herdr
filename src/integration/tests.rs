@@ -3972,6 +3972,7 @@ fn install_and_uninstall_letta_preserve_unrelated_settings_and_hooks() {
 fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     use std::io::Write;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::process::CommandExt;
     use std::process::{Command, Stdio};
 
     let _lock = integration_env_lock();
@@ -3996,7 +3997,8 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
     permissions.set_mode(0o755);
     fs::set_permissions(&fake_herdr, permissions).unwrap();
 
-    let mut child = Command::new("sh")
+    let mut command = Command::new("sh");
+    command
         .arg(&installed.hook_path)
         .arg("session")
         .env("HERDR_ENV", "1")
@@ -4006,8 +4008,16 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
+        // Lead a process group so a hung hook can be killed with its children.
+        .process_group(0);
+    // The hook finds python3 on PATH, and version-manager shims there (mise,
+    // asdf, pyenv) locate their installs through HOME. Under the fake HOME a
+    // mise shim re-executes itself forever, so run the hook with the real one.
+    match &previous_home {
+        Some(home) => command.env("HOME", home),
+        None => command.env_remove("HOME"),
+    };
+    let mut child = command.spawn().unwrap();
     child
         .stdin
         .take()
@@ -4016,6 +4026,19 @@ fn letta_session_hook_is_silent_and_encodes_default_conversation() {
             br#"{"event_type":"SessionStart","conversation_id":"default","agent_id":"agent-123","is_new_session":false}"#,
         )
         .unwrap();
+    // Fail instead of hanging. A hung hook outlives the test runner when the
+    // runner is killed, and its children keep running long after.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while child.try_wait().unwrap().is_none() {
+        if std::time::Instant::now() >= deadline {
+            unsafe {
+                libc::kill(-(child.id() as i32), libc::SIGKILL);
+            }
+            child.wait().ok();
+            panic!("letta session hook still running after 10s; killed its process group");
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
     assert!(output.stdout.is_empty());
