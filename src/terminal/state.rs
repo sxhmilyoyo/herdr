@@ -1937,6 +1937,20 @@ impl TerminalState {
         })
     }
 
+    /// The agent session this terminal reports: the live hook's session, else
+    /// the one restored with the pane. The API exposes it as `agent_session`,
+    /// and pane lineage records it for the parent pane of a new pane.
+    pub fn reported_agent_session(&self) -> Option<crate::agent_resume::PersistedAgentSession> {
+        self.current_session_identity_for_persistence()
+            .map(
+                |(source, agent, kind, value)| crate::agent_resume::PersistedAgentSession {
+                    source,
+                    agent,
+                    session_ref: crate::agent_resume::AgentSessionRef { kind, value },
+                },
+            )
+    }
+
     pub fn session_ref_is_current(
         &self,
         session_ref: &crate::agent_resume::AgentSessionRef,

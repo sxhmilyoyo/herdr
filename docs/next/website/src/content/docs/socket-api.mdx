@@ -167,9 +167,13 @@ pane.
 `pane.split`, `tab.create`, `workspace.create`, `worktree.create`, and
 `worktree.open` accept an optional `caller_pane_id`: a public pane id or live
 agent name recorded as the created pane's parent. Pane and agent records then
-carry `parent_pane_id` while that parent pane is open. The link is pane-scoped
-and follows panes across tab and workspace moves; when a parent closes, its
-children are promoted to the nearest open ancestor and each promoted pane emits
+carry `parent_pane_id` while that parent pane is open, and `parent_agent_session`:
+the `agent_session` the parent pane reported when the pane was created, absent
+when it reported none. Compare it with the parent's current `agent_session` to
+tell whether the agent that created the pane still runs there. The link is
+pane-scoped and follows panes across tab and workspace moves; when a parent
+closes, its children are promoted to the nearest open ancestor, taking over the
+closed parent's own `parent_agent_session`, and each promoted pane emits
 `pane.updated`. An unknown `caller_pane_id` records no parent and does not fail
 the request. Servers that support the field advertise the `pane_parent`
 capability; clients must omit it otherwise, because an older server would
@@ -839,7 +843,7 @@ Pane event subscriptions include `pane.created`, `pane.updated`, `pane.closed`, 
 to this server. It does not move other clients' views, and its payload does not
 identify the client. Selecting an already-selected pane does not emit it again.
 Terminal-title changes can emit `pane.updated`, but spinner-only raw-title changes do not emit it when `terminal_title_stripped` is unchanged.
-`pane.updated` also reports a changed `parent_pane_id` when a pane's parent closes and the pane is promoted to the nearest open ancestor.
+`pane.updated` also reports a changed `parent_pane_id` and `parent_agent_session` when a pane's parent closes and the pane is promoted to the nearest open ancestor.
 `pane.scroll_changed` is scoped to one `pane_id` and emits `pane_id`,
 `workspace_id`, and the current `scroll` metrics whenever Herdr observes a
 changed scroll snapshot.

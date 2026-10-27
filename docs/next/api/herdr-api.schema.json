@@ -808,6 +808,17 @@
             "pane_id": {
               "type": "string"
             },
+            "parent_agent_session": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/event/$defs/AgentSessionInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Agent session the parent pane reported when this pane was created.\nAbsent when that pane hosted no agent or its agent reports no session."
+            },
             "parent_pane_id": {
               "description": "Pane this pane was created from, while that pane is still open.",
               "type": [
@@ -6648,6 +6659,17 @@
             "pane_id": {
               "type": "string"
             },
+            "parent_agent_session": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentSessionInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Agent session the parent pane reported when this pane was created."
+            },
             "parent_pane_id": {
               "description": "Pane this pane was created from, while that pane is still open.",
               "type": [
@@ -7964,6 +7986,17 @@
             },
             "pane_id": {
               "type": "string"
+            },
+            "parent_agent_session": {
+              "anyOf": [
+                {
+                  "$ref": "#/schemas/success_response/$defs/AgentSessionInfo"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Agent session the parent pane reported when this pane was created.\nAbsent when that pane hosted no agent or its agent reports no session."
             },
             "parent_pane_id": {
               "description": "Pane this pane was created from, while that pane is still open.",

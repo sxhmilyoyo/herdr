@@ -3123,6 +3123,64 @@ mod tests {
     }
 
     #[test]
+    fn api_pane_lineage_records_the_agent_session_of_the_origin_pane() {
+        let mut app = app_with_linked_worktree();
+        app.state.active = Some(0);
+        app.state.selected = 0;
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let from_agent = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        let from_shell = app.state.workspaces[0].test_split(ratatui::layout::Direction::Vertical);
+        app.state.ensure_test_terminals();
+        let session = |value: &str| crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef {
+                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                value: value.into(),
+            },
+        };
+        let root_terminal_id = app.state.workspaces[0].terminal_id(root).unwrap().clone();
+        let root_terminal = app.state.terminals.get_mut(&root_terminal_id).unwrap();
+        root_terminal.detected_agent = Some(crate::detect::Agent::Claude);
+        root_terminal.set_persisted_agent_session(session("dispatcher-1"));
+
+        app.adopt_new_pane(from_agent, Some(root));
+        let recorded = Some(crate::api::schema::AgentSessionInfo {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            kind: crate::agent_resume::AgentSessionRefKind::Id,
+            value: "dispatcher-1".into(),
+        });
+        assert_eq!(
+            app.pane_info(0, from_agent).unwrap().parent_agent_session,
+            recorded
+        );
+
+        // A pane that hosts no agent records no session: the link is pane-only.
+        app.adopt_new_pane(from_shell, Some(from_agent));
+        let from_shell_info = app.pane_info(0, from_shell).unwrap();
+        assert!(from_shell_info.parent_pane_id.is_some());
+        assert_eq!(from_shell_info.parent_agent_session, None);
+
+        // The record keeps the session that created the pane after the parent
+        // pane starts another one.
+        let root_terminal = app.state.terminals.get_mut(&root_terminal_id).unwrap();
+        root_terminal.set_persisted_agent_session(session("dispatcher-2"));
+        assert_eq!(
+            app.pane_info(0, from_agent).unwrap().parent_agent_session,
+            recorded
+        );
+        assert_eq!(
+            app.pane_info(0, root)
+                .unwrap()
+                .agent_session
+                .map(|session| session.value),
+            Some("dispatcher-2".to_owned())
+        );
+        app.state.assert_invariants_for_test();
+    }
+
+    #[test]
     fn api_pane_close_promotes_children_and_emits_pane_updated() {
         let mut app = app_with_linked_worktree();
         app.state.active = Some(0);

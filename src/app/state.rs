@@ -14,6 +14,16 @@ pub(crate) struct PluginPaneRecord {
     pub entrypoint: String,
 }
 
+/// Where a pane nests: the pane it was created from and, when that pane's
+/// agent reported its session at the time, that session. Presentations nest
+/// the pane under its parent only while the parent pane still reports the
+/// recorded session; a link without one nests under whatever agent runs there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct PaneParent {
+    pub pane: PaneId,
+    pub agent_session: Option<crate::agent_resume::PersistedAgentSession>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PopupPaneState {
     pub pane_id: PaneId,
@@ -876,9 +886,9 @@ pub struct AppState {
     pub(crate) installed_plugins: InstalledPluginRegistry,
     /// Pane ids opened through the plugin pane API.
     pub(crate) plugin_panes: std::collections::HashMap<PaneId, PluginPaneRecord>,
-    /// Parent pane of each pane created from another pane's process, by raw id.
+    /// Parent link of each pane created from another pane's process, by raw id.
     /// Entries are promoted to the nearest live ancestor when a parent closes.
-    pub(crate) pane_parents: std::collections::HashMap<PaneId, PaneId>,
+    pub(crate) pane_parents: std::collections::HashMap<PaneId, PaneParent>,
     /// Panes whose parent changed through promotion; the app layer emits
     /// `pane.updated` for them and drains the list.
     pub(crate) pending_pane_parent_updates: Vec<PaneId>,

@@ -1241,6 +1241,7 @@ mod tests {
     ) -> crate::api::schema::PaneInfo {
         crate::api::schema::PaneInfo {
             parent_pane_id: None,
+            parent_agent_session: None,
             pane_id: pane_id.into(),
             terminal_id: "term_1".into(),
             workspace_id: "ws_1".into(),

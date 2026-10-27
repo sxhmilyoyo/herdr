@@ -175,6 +175,11 @@ pub(super) fn snapshot_with_completions(
                 tokens,
                 focused,
                 parent_pane_id: agent.parent_pane_id,
+                agent_session_key: agent.agent_session.as_ref().map(agent_session_key),
+                parent_agent_session_key: agent
+                    .parent_agent_session
+                    .as_ref()
+                    .map(agent_session_key),
             }
         })
         .collect();
@@ -627,6 +632,16 @@ fn split_hit_rect(
     Some(hit)
 }
 
+/// Equality key for an agent session in the client snapshot: the same session
+/// reference the server compares when it decides whether a session is current.
+fn agent_session_key(session: &crate::api::schema::AgentSessionInfo) -> String {
+    let kind = match session.kind {
+        crate::agent_resume::AgentSessionRefKind::Id => "id",
+        crate::agent_resume::AgentSessionRefKind::Path => "path",
+    };
+    format!("{kind}:{}", session.value)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -832,6 +847,76 @@ mod tests {
         assert_eq!(
             split_hit_rect(&horizontal, false, true, &[Rect::new(19, 3, 1, 12)]),
             None
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn snapshot_keys_each_agent_session_and_its_recorded_parent_session() {
+        let (_api_tx, api_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = crate::app::App::new(
+            &crate::config::Config::default(),
+            crate::app::AppPolicy::TEST,
+            None,
+            api_rx,
+            crate::api::EventHub::default(),
+        );
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("lineage")];
+        app.state.active = Some(0);
+        let root = app.state.workspaces[0].tabs[0].root_pane;
+        let child = app.state.workspaces[0].test_split(ratatui::layout::Direction::Horizontal);
+        app.state.ensure_test_terminals();
+        let session = |value: &str| crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef {
+                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                value: value.into(),
+            },
+        };
+        let terminal_id = |app: &crate::app::App, pane| {
+            app.state.workspaces[0].terminal_id(pane).unwrap().clone()
+        };
+        for (pane, value) in [(root, "dispatcher-1"), (child, "delegate-1")] {
+            let id = terminal_id(&app, pane);
+            let terminal = app.state.terminals.get_mut(&id).unwrap();
+            terminal.set_detected_state(
+                Some(crate::detect::Agent::Claude),
+                crate::detect::AgentState::Idle,
+            );
+            terminal.set_persisted_agent_session(session(value));
+        }
+        app.adopt_new_pane(child, Some(root));
+        // The parent pane then starts a different agent session.
+        let root_id = terminal_id(&app, root);
+        app.state
+            .terminals
+            .get_mut(&root_id)
+            .unwrap()
+            .set_persisted_agent_session(session("dispatcher-2"));
+
+        let snapshot = snapshot(&app, "boot", 1, None, None);
+        let agent = |pane| {
+            let public_id = app.public_pane_id(0, pane).unwrap();
+            snapshot
+                .agents
+                .iter()
+                .find(|agent| agent.pane_id == public_id)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(
+            agent(root).agent_session_key.as_deref(),
+            Some("id:dispatcher-2")
+        );
+        assert_eq!(agent(root).parent_agent_session_key, None);
+        assert_eq!(
+            agent(child).agent_session_key.as_deref(),
+            Some("id:delegate-1")
+        );
+        assert_eq!(
+            agent(child).parent_agent_session_key.as_deref(),
+            Some("id:dispatcher-1"),
+            "the child keeps the session that created it, so the client can tell"
         );
     }
 }

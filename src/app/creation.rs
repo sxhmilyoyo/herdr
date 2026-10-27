@@ -337,16 +337,25 @@ impl App {
                 .focused_pane_id()
                 .is_some_and(|focused| focused == pane_id);
         let presentation = terminal.effective_presentation();
+        let parent = self
+            .state
+            .effective_pane_parent_link(pane_id)
+            .and_then(|link| {
+                let public_id = self.state.public_pane_id_anywhere(link.pane)?;
+                Some((
+                    public_id,
+                    link.agent_session.as_ref().map(agent_session_info),
+                ))
+            });
+        let (parent_pane_id, parent_agent_session) = parent.unzip();
         Some(crate::api::schema::PaneInfo {
             pane_id: self.public_pane_id(ws_idx, pane_id)?,
             terminal_id: terminal.id.to_string(),
             workspace_id: self.public_workspace_id(ws_idx),
             tab_id: self.public_tab_id(ws_idx, tab_idx)?,
             focused,
-            parent_pane_id: self
-                .state
-                .effective_pane_parent(pane_id)
-                .and_then(|parent| self.state.public_pane_id_anywhere(parent)),
+            parent_pane_id,
+            parent_agent_session: parent_agent_session.flatten(),
             cwd: ws.tabs[tab_idx]
                 .cwd_for_pane(pane_id, &self.state.terminals, &self.terminal_runtimes)
                 .map(|cwd| cwd.display().to_string()),
@@ -420,24 +429,19 @@ impl App {
 fn terminal_agent_session_info(
     terminal: &crate::terminal::TerminalState,
 ) -> Option<crate::api::schema::AgentSessionInfo> {
-    if let Some(authority) = terminal.hook_authority.as_ref() {
-        if let Some(session_ref) = authority.session_ref.as_ref() {
-            return Some(crate::api::schema::AgentSessionInfo {
-                source: authority.source.clone(),
-                agent: authority.agent_label.clone(),
-                kind: session_ref.kind,
-                value: session_ref.value.clone(),
-            });
-        }
-    }
-
     terminal
-        .persisted_agent_session
+        .reported_agent_session()
         .as_ref()
-        .map(|session| crate::api::schema::AgentSessionInfo {
-            source: session.source.clone(),
-            agent: session.agent.clone(),
-            kind: session.session_ref.kind,
-            value: session.session_ref.value.clone(),
-        })
+        .map(agent_session_info)
+}
+
+fn agent_session_info(
+    session: &crate::agent_resume::PersistedAgentSession,
+) -> crate::api::schema::AgentSessionInfo {
+    crate::api::schema::AgentSessionInfo {
+        source: session.source.clone(),
+        agent: session.agent.clone(),
+        kind: session.session_ref.kind,
+        value: session.session_ref.value.clone(),
+    }
 }

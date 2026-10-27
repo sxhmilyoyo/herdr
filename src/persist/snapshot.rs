@@ -114,6 +114,9 @@ pub struct PaneSnapshot {
     /// Public id of the pane this pane was created from, when still open.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_pane_id: Option<String>,
+    /// Agent session expected in the parent pane, when the link recorded one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_agent_session: Option<PaneAgentSessionSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,6 +265,11 @@ fn first_pane_id_in_layout(layout: &LayoutSnapshot) -> Option<u32> {
     }
 }
 
+/// Effective parent of each pane: its public pane id and the agent session
+/// expected to run there, when the link recorded one.
+pub type PanePublicParents =
+    HashMap<crate::layout::PaneId, (String, Option<crate::agent_resume::PersistedAgentSession>)>;
+
 /// Capture the current app state into a serializable snapshot.
 pub fn capture(
     workspaces: &[Workspace],
@@ -272,7 +280,7 @@ pub fn capture(
     terminal_runtimes: &TerminalRuntimeRegistry,
     active: Option<usize>,
     selected: usize,
-    pane_parents: &HashMap<crate::layout::PaneId, String>,
+    pane_parents: &PanePublicParents,
 ) -> SessionSnapshot {
     SessionSnapshot {
         version: SNAPSHOT_VERSION,
@@ -297,7 +305,7 @@ fn capture_workspace(
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
-    pane_parents: &HashMap<crate::layout::PaneId, String>,
+    pane_parents: &PanePublicParents,
 ) -> WorkspaceSnapshot {
     let tabs: Vec<_> = ws
         .tabs
@@ -334,7 +342,7 @@ fn capture_tab(
         crate::terminal::TerminalState,
     >,
     terminal_runtimes: &TerminalRuntimeRegistry,
-    pane_parents: &HashMap<crate::layout::PaneId, String>,
+    pane_parents: &PanePublicParents,
 ) -> TabSnapshot {
     let mut panes = HashMap::new();
     for id in tab.panes.keys() {
@@ -372,12 +380,7 @@ fn capture_tab(
             terminal
                 .persisted_agent_session
                 .as_ref()
-                .map(|session| PaneAgentSessionSnapshot {
-                    source: session.source.clone(),
-                    agent: session.agent.clone(),
-                    kind: session.session_ref.kind,
-                    value: session.session_ref.value.clone(),
-                })
+                .map(agent_session_snapshot)
         });
         let agent_resume = terminal
             .and_then(|terminal| terminal.reported_resume())
@@ -396,7 +399,11 @@ fn capture_tab(
                 agent_session,
                 agent_resume,
                 launch_argv,
-                parent_pane_id: pane_parents.get(id).cloned(),
+                parent_pane_id: pane_parents.get(id).map(|(public_id, _)| public_id.clone()),
+                parent_agent_session: pane_parents
+                    .get(id)
+                    .and_then(|(_, session)| session.as_ref())
+                    .map(agent_session_snapshot),
             },
         );
     }
@@ -443,6 +450,17 @@ pub fn capture_history(
                     .collect(),
             })
             .collect(),
+    }
+}
+
+fn agent_session_snapshot(
+    session: &crate::agent_resume::PersistedAgentSession,
+) -> PaneAgentSessionSnapshot {
+    PaneAgentSessionSnapshot {
+        source: session.source.clone(),
+        agent: session.agent.clone(),
+        kind: session.session_ref.kind,
+        value: session.session_ref.value.clone(),
     }
 }
 
@@ -577,9 +595,9 @@ mod tests {
         let child = state.workspaces[0].test_split(Direction::Horizontal);
         let beta_root = state.workspaces[1].focused_pane_id().unwrap();
         state.ensure_test_terminals();
-        assert!(state.set_pane_parent(child, alpha_root));
-        // A link may cross workspaces.
-        assert!(state.set_pane_parent(beta_root, child));
+        assert!(state.set_pane_parent(child, alpha_root, Some(dispatcher_session())));
+        // A link may cross workspaces, and may lack an agent session.
+        assert!(state.set_pane_parent(beta_root, child, None));
 
         let snapshot = capture_from_state(&state);
         let alpha_root_public = state.public_pane_id_anywhere(alpha_root).unwrap();
@@ -589,11 +607,21 @@ mod tests {
             persisted_child.parent_pane_id.as_deref(),
             Some(alpha_root_public.as_str())
         );
+        assert_eq!(
+            persisted_child.parent_agent_session,
+            Some(PaneAgentSessionSnapshot {
+                source: "herdr:claude".into(),
+                agent: "claude".into(),
+                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                value: "dispatcher-1".into(),
+            })
+        );
         let persisted_beta_root = &snapshot.workspaces[1].tabs[0].panes[&beta_root.raw()];
         assert_eq!(
             persisted_beta_root.parent_pane_id.as_deref(),
             Some(child_public.as_str())
         );
+        assert_eq!(persisted_beta_root.parent_agent_session, None);
         assert!(snapshot.workspaces[0].tabs[0].panes[&alpha_root.raw()]
             .parent_pane_id
             .is_none());
@@ -601,8 +629,11 @@ mod tests {
         // Public ids are the stable key, so the same workspaces stand in for
         // the restored ones.
         let restored = crate::persist::restored_pane_parents(&snapshot, &state.workspaces);
-        assert_eq!(restored.get(&child), Some(&alpha_root));
-        assert_eq!(restored.get(&beta_root), Some(&child));
+        assert_eq!(
+            restored.get(&child),
+            Some(&(alpha_root, Some(dispatcher_session())))
+        );
+        assert_eq!(restored.get(&beta_root), Some(&(child, None)));
         assert_eq!(restored.len(), 2);
 
         // A parent that no longer exists is dropped; other links survive.
@@ -614,7 +645,18 @@ mod tests {
             .parent_pane_id = Some(format!("{}:p99", state.workspaces[0].id));
         let restored = crate::persist::restored_pane_parents(&dangling, &state.workspaces);
         assert!(!restored.contains_key(&child));
-        assert_eq!(restored.get(&beta_root), Some(&child));
+        assert_eq!(restored.get(&beta_root), Some(&(child, None)));
+    }
+
+    fn dispatcher_session() -> crate::agent_resume::PersistedAgentSession {
+        crate::agent_resume::PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef {
+                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                value: "dispatcher-1".into(),
+            },
+        }
     }
 
     fn capture_from_state(state: &AppState) -> SessionSnapshot {
@@ -632,7 +674,7 @@ mod tests {
             terminal_runtimes,
             state.active,
             state.selected,
-            &state.pane_parent_public_ids(),
+            &state.public_pane_parents(),
         )
     }
 
@@ -758,6 +800,7 @@ mod tests {
             0,
             PaneSnapshot {
                 parent_pane_id: None,
+                parent_agent_session: None,
                 cwd: PathBuf::from("/home/can/Projects/herdr"),
                 label: None,
                 agent_name: None,
@@ -771,6 +814,7 @@ mod tests {
             1,
             PaneSnapshot {
                 parent_pane_id: None,
+                parent_agent_session: None,
                 cwd: PathBuf::from("/home/can/Projects/website"),
                 label: Some("website".into()),
                 agent_name: None,
@@ -1458,6 +1502,7 @@ mod tests {
             0,
             PaneSnapshot {
                 parent_pane_id: None,
+                parent_agent_session: None,
                 cwd: PathBuf::from("/tmp/this-directory-does-not-exist-for-herdr-test"),
                 label: None,
                 agent_name: None,
@@ -1471,6 +1516,7 @@ mod tests {
             1,
             PaneSnapshot {
                 parent_pane_id: None,
+                parent_agent_session: None,
                 cwd: std::env::var("HOME")
                     .map(PathBuf::from)
                     .unwrap_or_else(|_| PathBuf::from("/tmp")),

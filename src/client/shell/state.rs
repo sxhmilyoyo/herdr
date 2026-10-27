@@ -1249,12 +1249,22 @@ impl ClientShellState {
         let Some(focused) = snapshot.focused_pane_id.as_deref() else {
             return false;
         };
-        let parent_of = |pane_id: &str| {
+        let agent_in = |pane_id: &str| {
             snapshot
                 .agents
                 .iter()
                 .find(|agent| agent.pane_id == pane_id)
-                .and_then(|agent| agent.parent_pane_id.clone())
+        };
+        // Only ancestors the entry actually nests under: a parent pane that now
+        // runs a different agent session keeps its own fold.
+        let parent_of = |pane_id: &str| {
+            let agent = agent_in(pane_id)?;
+            let parent = agent.parent_pane_id.as_deref()?;
+            agent_in(parent)
+                .is_some_and(|parent| {
+                    super::agent_sidebar::runs_recorded_parent_agent(agent, parent)
+                })
+                .then(|| parent.to_owned())
         };
         let mut ancestors = Vec::new();
         let mut cursor = parent_of(focused);

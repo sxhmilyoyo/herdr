@@ -197,22 +197,36 @@ pub(super) fn ordered_agent_entries(
 /// among siblings. A parent that is not itself a listed agent makes its
 /// children roots; the server forbids cycles, but a stale snapshot must not
 /// hang the client, so every agent is emitted exactly once.
+/// Whether `child` nests under `parent`, the agent listed in its parent pane:
+/// that pane must still run the agent session the link recorded, when the link
+/// recorded one.
+pub(super) fn runs_recorded_parent_agent(
+    child: &ClientShellAgent,
+    parent: &ClientShellAgent,
+) -> bool {
+    child
+        .parent_agent_session_key
+        .as_ref()
+        .is_none_or(|key| parent.agent_session_key.as_ref() == Some(key))
+}
+
 pub(super) fn agent_tree_entries(
     agents: &[ClientShellAgent],
     collapsed: &HashSet<String>,
 ) -> Vec<OrderedAgent> {
     let listed = agents
         .iter()
-        .map(|agent| agent.pane_id.as_str())
-        .collect::<HashSet<_>>();
+        .map(|agent| (agent.pane_id.as_str(), agent))
+        .collect::<HashMap<_, _>>();
     let mut children: HashMap<&str, Vec<&ClientShellAgent>> = HashMap::new();
     let mut roots = Vec::new();
     for agent in agents {
-        match agent
-            .parent_pane_id
-            .as_deref()
-            .filter(|parent| *parent != agent.pane_id && listed.contains(parent))
-        {
+        match agent.parent_pane_id.as_deref().filter(|parent| {
+            *parent != agent.pane_id
+                && listed
+                    .get(parent)
+                    .is_some_and(|parent| runs_recorded_parent_agent(agent, parent))
+        }) {
             Some(parent) => children.entry(parent).or_default().push(agent),
             None => roots.push(agent),
         }

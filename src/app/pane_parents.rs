@@ -1,14 +1,20 @@
-//! Pane lineage: which pane a pane was created from.
+//! Pane lineage: which pane a pane was created from, and which agent session
+//! that pane ran at the time.
 //!
-//! The link is a server-owned, pane-scoped fact. It survives the agent in the
+//! The link is a server-owned fact keyed by pane. It survives the agent in the
 //! parent pane exiting and follows panes across tab and workspace moves because
-//! raw pane ids never change or get reused. When a parent closes, its children
-//! are promoted to the nearest live ancestor.
+//! raw pane ids never change or get reused. The recorded agent session lets a
+//! presentation tell a parent pane that still runs the creating agent from one
+//! that now runs a different agent. When a parent closes, each child takes over
+//! the closed parent's own link, so it is promoted to the nearest live ancestor
+//! together with the agent session expected there.
 
 use std::collections::HashMap;
 
+use crate::agent_resume::PersistedAgentSession;
 use crate::layout::PaneId;
 
+use super::state::PaneParent;
 use super::AppState;
 
 impl AppState {
@@ -18,11 +24,17 @@ impl AppState {
             .any(|ws| ws.pane_state(pane_id).is_some())
     }
 
-    /// Record `parent` as the parent of `child`.
+    /// Record `parent` as the parent of `child`, with the agent session the
+    /// parent pane reported at that moment, when it reported one.
     ///
     /// Returns false, leaving state unchanged, when either pane is not live,
     /// when the panes are the same, or when the link would form a cycle.
-    pub(crate) fn set_pane_parent(&mut self, child: PaneId, parent: PaneId) -> bool {
+    pub(crate) fn set_pane_parent(
+        &mut self,
+        child: PaneId,
+        parent: PaneId,
+        agent_session: Option<PersistedAgentSession>,
+    ) -> bool {
         if child == parent || !self.pane_is_live(child) || !self.pane_is_live(parent) {
             return false;
         }
@@ -32,29 +44,49 @@ impl AppState {
             if current == child {
                 return false;
             }
-            cursor = self.pane_parents.get(&current).copied();
+            cursor = self.pane_parents.get(&current).map(|link| link.pane);
             hops += 1;
             if hops > self.pane_parents.len() {
                 break;
             }
         }
-        self.pane_parents.insert(child, parent);
+        self.pane_parents.insert(
+            child,
+            PaneParent {
+                pane: parent,
+                agent_session,
+            },
+        );
         true
     }
 
     /// The nearest recorded ancestor of `pane_id` that is still a live pane.
+    #[cfg(test)]
     pub(crate) fn effective_pane_parent(&self, pane_id: PaneId) -> Option<PaneId> {
-        self.nearest_live_ancestor(self.pane_parents.get(&pane_id).copied(), &[])
+        self.effective_pane_parent_link(pane_id)
+            .map(|link| link.pane)
     }
 
-    fn nearest_live_ancestor(&self, start: Option<PaneId>, excluded: &[PaneId]) -> Option<PaneId> {
+    /// The link that reaches the nearest live ancestor of `pane_id`: that pane
+    /// and the agent session expected to run in it.
+    pub(crate) fn effective_pane_parent_link(&self, pane_id: PaneId) -> Option<&PaneParent> {
+        self.nearest_live_link(self.pane_parents.get(&pane_id), &[])
+    }
+
+    /// Follow `start` up the recorded links to the first one whose pane is
+    /// live and not in `excluded`.
+    fn nearest_live_link<'a>(
+        &'a self,
+        start: Option<&'a PaneParent>,
+        excluded: &[PaneId],
+    ) -> Option<&'a PaneParent> {
         let mut cursor = start;
         let mut hops = 0usize;
-        while let Some(current) = cursor {
-            if !excluded.contains(&current) && self.pane_is_live(current) {
-                return Some(current);
+        while let Some(link) = cursor {
+            if !excluded.contains(&link.pane) && self.pane_is_live(link.pane) {
+                return Some(link);
             }
-            cursor = self.pane_parents.get(&current).copied();
+            cursor = self.pane_parents.get(&link.pane);
             hops += 1;
             if hops > self.pane_parents.len() {
                 return None;
@@ -64,7 +96,9 @@ impl AppState {
     }
 
     /// Forget closed panes and promote their children to the nearest live
-    /// ancestor. Children whose parent changed are queued in
+    /// ancestor. A promoted child takes over the link that reaches that
+    /// ancestor, so it expects the agent session its closed parent expected.
+    /// Children whose parent changed are queued in
     /// `pending_pane_parent_updates` so the app layer can emit `pane.updated`.
     ///
     /// Safe to call before or after the closed panes leave their workspaces:
@@ -77,14 +111,16 @@ impl AppState {
         let children = self
             .pane_parents
             .iter()
-            .filter(|(child, parent)| closed.contains(parent) && !closed.contains(child))
+            .filter(|(child, parent)| closed.contains(&parent.pane) && !closed.contains(child))
             .map(|(child, _)| *child)
             .collect::<Vec<_>>();
         for child in children {
-            let start = self.pane_parents.get(&child).copied();
-            match self.nearest_live_ancestor(start, &closed) {
-                Some(parent) => {
-                    self.pane_parents.insert(child, parent);
+            let promoted = self
+                .nearest_live_link(self.pane_parents.get(&child), &closed)
+                .cloned();
+            match promoted {
+                Some(link) => {
+                    self.pane_parents.insert(child, link);
                 }
                 None => {
                     self.pane_parents.remove(&child);
@@ -101,22 +137,25 @@ impl AppState {
             .retain(|pane_id| !closed.contains(pane_id));
     }
 
-    /// Effective parent of every live pane that has one, as public pane ids.
-    pub(crate) fn pane_parent_public_ids(&self) -> HashMap<PaneId, String> {
-        let mut public_ids = HashMap::new();
+    /// Effective parent of every live pane that has one, as its public pane id
+    /// and the agent session expected to run in it.
+    pub(crate) fn public_pane_parents(
+        &self,
+    ) -> HashMap<PaneId, (String, Option<PersistedAgentSession>)> {
+        let mut parents = HashMap::new();
         for ws in &self.workspaces {
             for tab in &ws.tabs {
                 for pane_id in tab.panes.keys() {
-                    let Some(parent) = self.effective_pane_parent(*pane_id) else {
+                    let Some(link) = self.effective_pane_parent_link(*pane_id) else {
                         continue;
                     };
-                    if let Some(public_id) = self.public_pane_id_anywhere(parent) {
-                        public_ids.insert(*pane_id, public_id);
+                    if let Some(public_id) = self.public_pane_id_anywhere(link.pane) {
+                        parents.insert(*pane_id, (public_id, link.agent_session.clone()));
                     }
                 }
             }
         }
-        public_ids
+        parents
     }
 
     /// Public id of a pane in whichever workspace currently holds it.
@@ -135,7 +174,8 @@ impl AppState {
             .flat_map(|ws| ws.tabs.iter())
             .flat_map(|tab| tab.panes.keys().copied())
             .collect::<std::collections::HashSet<_>>();
-        for (child, parent) in &self.pane_parents {
+        for (child, link) in &self.pane_parents {
+            let parent = &link.pane;
             assert_ne!(child, parent, "pane {child:?} must not be its own parent");
             assert!(
                 live.contains(child),
@@ -149,7 +189,7 @@ impl AppState {
             let mut hops = 0usize;
             while let Some(current) = cursor {
                 assert_ne!(current, *child, "pane parent cycle through {child:?}");
-                cursor = self.pane_parents.get(&current).copied();
+                cursor = self.pane_parents.get(&current).map(|link| link.pane);
                 hops += 1;
                 assert!(
                     hops <= self.pane_parents.len(),
@@ -164,6 +204,24 @@ impl AppState {
             );
         }
     }
+}
+
+/// Lineage links rebuilt by `crate::persist::restored_pane_parents`.
+pub(crate) fn restored_links(
+    restored: HashMap<PaneId, (PaneId, Option<PersistedAgentSession>)>,
+) -> HashMap<PaneId, PaneParent> {
+    restored
+        .into_iter()
+        .map(|(child, (pane, agent_session))| {
+            (
+                child,
+                PaneParent {
+                    pane,
+                    agent_session,
+                },
+            )
+        })
+        .collect()
 }
 
 impl super::App {
@@ -192,19 +250,32 @@ impl super::App {
         parent
     }
 
-    /// Record `parent` for a pane that was just created. A new pane has no
+    /// Record `parent` for a pane that was just created, with the agent
+    /// session the parent pane's agent reports right now. A new pane has no
     /// children, so this cannot form a cycle; a failure is a server bug.
     pub(crate) fn adopt_new_pane(&mut self, child: PaneId, parent: Option<PaneId>) {
         let Some(parent) = parent else {
             return;
         };
-        if !self.state.set_pane_parent(child, parent) {
+        let agent_session = self.origin_agent_session(parent);
+        if !self.state.set_pane_parent(child, parent, agent_session) {
             tracing::warn!(
                 child = child.raw(),
                 parent = parent.raw(),
                 "could not record pane parent"
             );
         }
+    }
+
+    /// The agent session reported by the agent in `pane`. A pane that hosts
+    /// no agent has none, so links from it nest under any later agent there.
+    fn origin_agent_session(&self, pane: PaneId) -> Option<PersistedAgentSession> {
+        let (_, pane_state) = self.find_pane(pane)?;
+        let terminal = self.state.terminals.get(&pane_state.attached_terminal_id)?;
+        if !terminal.is_agent_terminal() {
+            return None;
+        }
+        terminal.reported_agent_session()
     }
 
     /// Emit `pane.updated` for panes whose parent changed through promotion.
@@ -241,22 +312,22 @@ mod tests {
     #[test]
     fn set_parent_records_live_link_and_rejects_cycles() {
         let (mut state, panes) = state_with_panes(3);
-        assert!(state.set_pane_parent(panes[1], panes[0]));
-        assert!(state.set_pane_parent(panes[2], panes[1]));
+        assert!(state.set_pane_parent(panes[1], panes[0], None));
+        assert!(state.set_pane_parent(panes[2], panes[1], None));
         assert_eq!(state.effective_pane_parent(panes[2]), Some(panes[1]));
         assert_eq!(state.effective_pane_parent(panes[1]), Some(panes[0]));
         assert_eq!(state.effective_pane_parent(panes[0]), None);
 
         assert!(
-            !state.set_pane_parent(panes[0], panes[2]),
+            !state.set_pane_parent(panes[0], panes[2], None),
             "cycle must be rejected"
         );
         assert!(
-            !state.set_pane_parent(panes[0], panes[0]),
+            !state.set_pane_parent(panes[0], panes[0], None),
             "self link must be rejected"
         );
         assert!(
-            !state.set_pane_parent(panes[1], PaneId::from_raw(9_999)),
+            !state.set_pane_parent(panes[1], PaneId::from_raw(9_999), None),
             "unknown parent must be rejected"
         );
         assert_eq!(state.effective_pane_parent(panes[0]), None);
@@ -266,8 +337,8 @@ mod tests {
     #[test]
     fn closing_a_parent_promotes_children_to_the_grandparent() {
         let (mut state, panes) = state_with_panes(3);
-        assert!(state.set_pane_parent(panes[1], panes[0]));
-        assert!(state.set_pane_parent(panes[2], panes[1]));
+        assert!(state.set_pane_parent(panes[1], panes[0], None));
+        assert!(state.set_pane_parent(panes[2], panes[1], None));
 
         state.workspaces[0].close_pane(panes[1]);
         state.retire_pane_parents([panes[1]]);
@@ -281,8 +352,8 @@ mod tests {
     #[test]
     fn closing_the_whole_chain_leaves_children_as_roots() {
         let (mut state, panes) = state_with_panes(3);
-        assert!(state.set_pane_parent(panes[1], panes[0]));
-        assert!(state.set_pane_parent(panes[2], panes[1]));
+        assert!(state.set_pane_parent(panes[1], panes[0], None));
+        assert!(state.set_pane_parent(panes[2], panes[1], None));
 
         // The closed set is honoured before the panes leave the workspace.
         state.retire_pane_parents([panes[0], panes[1]]);
@@ -298,8 +369,8 @@ mod tests {
     #[test]
     fn effective_parent_skips_dead_entries_without_retirement() {
         let (mut state, panes) = state_with_panes(3);
-        assert!(state.set_pane_parent(panes[1], panes[0]));
-        assert!(state.set_pane_parent(panes[2], panes[1]));
+        assert!(state.set_pane_parent(panes[1], panes[0], None));
+        assert!(state.set_pane_parent(panes[2], panes[1], None));
 
         state.workspaces[0].close_pane(panes[1]);
         assert_eq!(
@@ -312,13 +383,51 @@ mod tests {
     #[test]
     fn public_parent_ids_use_the_holding_workspace() {
         let (mut state, panes) = state_with_panes(2);
-        assert!(state.set_pane_parent(panes[1], panes[0]));
+        assert!(state.set_pane_parent(panes[1], panes[0], None));
         let expected = state
             .public_pane_id_anywhere(panes[0])
             .expect("root pane has a public id");
         assert!(expected.starts_with(&format!("{}:p", state.workspaces[0].id)));
-        let public_ids = state.pane_parent_public_ids();
-        assert_eq!(public_ids.get(&panes[1]), Some(&expected));
-        assert!(!public_ids.contains_key(&panes[0]));
+        let parents = state.public_pane_parents();
+        assert_eq!(
+            parents.get(&panes[1]).map(|(public_id, _)| public_id),
+            Some(&expected)
+        );
+        assert!(!parents.contains_key(&panes[0]));
+    }
+
+    fn claude_session(value: &str) -> PersistedAgentSession {
+        PersistedAgentSession {
+            source: "herdr:claude".into(),
+            agent: "claude".into(),
+            session_ref: crate::agent_resume::AgentSessionRef {
+                kind: crate::agent_resume::AgentSessionRefKind::Id,
+                value: value.into(),
+            },
+        }
+    }
+
+    #[test]
+    fn promotion_hands_the_closed_parent_link_to_its_children() {
+        let (mut state, panes) = state_with_panes(3);
+        assert!(state.set_pane_parent(panes[1], panes[0], Some(claude_session("root"))));
+        assert!(state.set_pane_parent(panes[2], panes[1], Some(claude_session("middle"))));
+
+        state.retire_pane_parents([panes[1]]);
+        assert_eq!(
+            state.pane_parents.get(&panes[2]),
+            Some(&PaneParent {
+                pane: panes[0],
+                agent_session: Some(claude_session("root")),
+            }),
+            "the child expects the agent its closed parent expected"
+        );
+        assert_eq!(
+            state
+                .public_pane_parents()
+                .get(&panes[2])
+                .map(|(_, session)| session.clone()),
+            Some(Some(claude_session("root")))
+        );
     }
 }
