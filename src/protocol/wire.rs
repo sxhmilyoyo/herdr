@@ -1090,6 +1090,14 @@ pub struct ClientShellAgent {
     /// Pane this agent's pane was created from, while that pane is open.
     #[serde(default)]
     pub parent_pane_id: Option<String>,
+    /// Equality key of the agent session this agent reports; opaque.
+    #[serde(default)]
+    pub agent_session_key: Option<String>,
+    /// Key of the agent session the parent pane ran when this agent's pane
+    /// was created. The entry nests under its parent only while the parent
+    /// reports the same key; without one it nests under any agent there.
+    #[serde(default)]
+    pub parent_agent_session_key: Option<String>,
 }
 
 /// Origin-relative geometry for one pane in a rendered pane surface.

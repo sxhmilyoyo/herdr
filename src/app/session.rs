@@ -47,7 +47,7 @@ impl App {
                 &self.terminal_runtimes,
                 self.state.active,
                 self.state.selected,
-                &self.state.pane_parent_public_ids(),
+                &self.state.public_pane_parents(),
             );
             let history = self.persist_pane_history.then(|| {
                 crate::persist::capture_history(

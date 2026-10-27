@@ -397,6 +397,7 @@ impl App {
             pane_id: pane.pane_id,
             focused: pane.focused,
             parent_pane_id: pane.parent_pane_id,
+            parent_agent_session: pane.parent_agent_session,
             launch_pending: terminal.managed_agent_launch_pending(),
             interactive_ready: terminal.managed_agent_interactive_ready(),
             state_change_seq: terminal.last_agent_state_change_seq.unwrap_or(0),

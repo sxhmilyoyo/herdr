@@ -240,7 +240,8 @@ Creating commands (`pane split`, `tab create`, `workspace create`,
 pane. By default the calling pane from `HERDR_PANE_ID` becomes the new pane's
 parent; `--parent ID` names another pane id or live agent name instead, and
 `--no-parent` records none. The parent appears as `parent_pane_id` on pane and
-agent records and drives the Agents panel `tree` ordering. The CLI only sends
+agent records, with the agent session it ran at that moment as
+`parent_agent_session`, and drives the Agents panel `tree` ordering. The CLI only sends
 the parent to servers that advertise the `pane_parent` capability, and a
 calling pane the target server does not know (for example when the command
 targets another session) is ignored rather than failing the command. An

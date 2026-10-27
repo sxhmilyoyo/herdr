@@ -126,7 +126,7 @@ pub fn restore_handoff(
 pub fn restored_pane_parents(
     snapshot: &SessionSnapshot,
     workspaces: &[Workspace],
-) -> HashMap<PaneId, PaneId> {
+) -> HashMap<PaneId, (PaneId, Option<crate::agent_resume::PersistedAgentSession>)> {
     let mut by_public_id = HashMap::new();
     for workspace in workspaces {
         for (pane_id, number) in &workspace.public_pane_numbers {
@@ -158,7 +158,17 @@ pub fn restored_pane_parents(
                     continue;
                 };
                 if child != parent {
-                    parents.insert(*child, *parent);
+                    let agent_session = pane.parent_agent_session.as_ref().map(|session| {
+                        crate::agent_resume::PersistedAgentSession {
+                            source: session.source.clone(),
+                            agent: session.agent.clone(),
+                            session_ref: crate::agent_resume::AgentSessionRef {
+                                kind: session.kind,
+                                value: session.value.clone(),
+                            },
+                        }
+                    });
+                    parents.insert(*child, (*parent, agent_session));
                 }
             }
         }
@@ -1598,6 +1608,7 @@ mod tests {
                         0,
                         super::super::snapshot::PaneSnapshot {
                             parent_pane_id: None,
+                            parent_agent_session: None,
                             cwd,
                             label: Some("reviewer".into()),
                             agent_name: Some("reviewer".into()),
@@ -1686,6 +1697,7 @@ mod tests {
                             10,
                             super::super::snapshot::PaneSnapshot {
                                 parent_pane_id: None,
+                                parent_agent_session: None,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -1699,6 +1711,7 @@ mod tests {
                             20,
                             super::super::snapshot::PaneSnapshot {
                                 parent_pane_id: None,
+                                parent_agent_session: None,
                                 cwd: cwd.clone(),
                                 label: None,
                                 agent_name: None,
@@ -1754,6 +1767,7 @@ mod tests {
                 id.parse::<u32>().unwrap(),
                 super::super::snapshot::PaneSnapshot {
                     parent_pane_id: None,
+                    parent_agent_session: None,
                     cwd: cwd.clone(),
                     label: None,
                     agent_name: None,
@@ -1766,6 +1780,7 @@ mod tests {
         };
         let final_pane = super::super::snapshot::PaneSnapshot {
             parent_pane_id: None,
+            parent_agent_session: None,
             cwd: cwd.clone(),
             label: Some("planner".into()),
             agent_name: Some("planner".into()),
@@ -1919,6 +1934,7 @@ mod tests {
                         0,
                         super::super::snapshot::PaneSnapshot {
                             parent_pane_id: None,
+                            parent_agent_session: None,
                             cwd,
                             label: None,
                             agent_name: None,
@@ -2238,6 +2254,7 @@ mod tests {
             0,
             super::super::snapshot::PaneSnapshot {
                 parent_pane_id: None,
+                parent_agent_session: None,
                 cwd: cwd.clone(),
                 label: None,
                 agent_name: None,

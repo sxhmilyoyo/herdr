@@ -190,6 +190,8 @@ fn mobile_header_and_switcher_render_released_sections_and_stable_targets() {
     let mut projected = snapshot();
     projected.agents.push(ClientShellAgent {
         parent_pane_id: None,
+        agent_session_key: None,
+        parent_agent_session_key: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),

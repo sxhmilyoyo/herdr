@@ -569,6 +569,8 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
     initial.agents = vec![
         ClientShellAgent {
             parent_pane_id: None,
+            agent_session_key: None,
+            parent_agent_session_key: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -586,6 +588,8 @@ fn pane_cycle_last_and_agent_actions_resolve_to_stable_pane_ids() {
         },
         ClientShellAgent {
             parent_pane_id: None,
+            agent_session_key: None,
+            parent_agent_session_key: None,
             pane_id: "pane_2".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -661,6 +665,8 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
     projected.agents = vec![
         ClientShellAgent {
             parent_pane_id: None,
+            agent_session_key: None,
+            parent_agent_session_key: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -678,6 +684,8 @@ fn agent_sidebar_honors_priority_symbols_tokens_and_stable_hits() {
         },
         ClientShellAgent {
             parent_pane_id: None,
+            agent_session_key: None,
+            parent_agent_session_key: None,
             pane_id: "pane_2".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -802,6 +810,8 @@ fn muted_agent_sidebar_rows_do_not_stack_terminal_faint() {
     projected.tabs[0].custom_label = true;
     projected.agents = vec![ClientShellAgent {
         parent_pane_id: None,
+        agent_session_key: None,
+        parent_agent_session_key: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -870,6 +880,8 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
     projected.agents = vec![
         ClientShellAgent {
             parent_pane_id: None,
+            agent_session_key: None,
+            parent_agent_session_key: None,
             pane_id: "pane_1".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -887,6 +899,8 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
         },
         ClientShellAgent {
             parent_pane_id: None,
+            agent_session_key: None,
+            parent_agent_session_key: None,
             pane_id: "pane_2".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -904,6 +918,8 @@ fn active_agent_view_controls_sidebar_order_and_focus_indices() {
         },
         ClientShellAgent {
             parent_pane_id: None,
+            agent_session_key: None,
+            parent_agent_session_key: None,
             pane_id: "pane_3".into(),
             workspace_id: "ws_1".into(),
             tab_id: "tab_1".into(),
@@ -979,6 +995,8 @@ fn agent_sort_toggle_is_client_local_and_persists_per_endpoint() {
     let mut projected = snapshot();
     projected.agents.push(ClientShellAgent {
         parent_pane_id: None,
+        agent_session_key: None,
+        parent_agent_session_key: None,
         pane_id: "pane_1".into(),
         workspace_id: "ws_1".into(),
         tab_id: "tab_1".into(),
@@ -1545,6 +1563,8 @@ fn semantic_notifications_use_client_policy_and_stable_navigation_targets() {
     let mut projected = snapshot();
     projected.agents.push(ClientShellAgent {
         parent_pane_id: None,
+        agent_session_key: None,
+        parent_agent_session_key: None,
         pane_id: "pane_2".into(),
         workspace_id: "ws_2".into(),
         tab_id: "tab_2".into(),
@@ -1702,6 +1722,8 @@ fn tree_agent(
 ) -> ClientShellAgent {
     ClientShellAgent {
         parent_pane_id: parent_pane_id.map(str::to_owned),
+        agent_session_key: None,
+        parent_agent_session_key: None,
         pane_id: pane_id.into(),
         workspace_id: workspace_id.into(),
         tab_id: tab_id.into(),
@@ -1933,6 +1955,67 @@ fn tree_sort_hides_labels_a_child_shares_with_its_parent() {
         entry(&text, "same").ends_with("ws · 1 · same"),
         "spaces sort shows every label; frame: {text}"
     );
+}
+
+#[test]
+fn tree_sort_nests_a_child_only_under_the_agent_that_created_it() {
+    let mut projected = snapshot();
+    for pane_id in ["pane_2", "pane_3", "pane_4"] {
+        let mut pane = projected.panes[0].clone();
+        pane.pane_id = pane_id.into();
+        pane.focused = false;
+        projected.panes.push(pane);
+    }
+    let mut dispatcher = tree_agent("pane_1", "ws_1", "tab_1", "dispatcher", None);
+    dispatcher.agent_session_key = Some("id:dispatcher-2".into());
+    // Created by the session that ran in pane_1 before the current one.
+    let mut stale = tree_agent("pane_3", "ws_1", "tab_1", "stale", Some("pane_1"));
+    stale.parent_agent_session_key = Some("id:dispatcher-1".into());
+    let mut current = tree_agent("pane_2", "ws_1", "tab_1", "current", Some("pane_1"));
+    current.parent_agent_session_key = Some("id:dispatcher-2".into());
+    // Recorded without a session: nests under whatever agent runs there.
+    let unknown = tree_agent("pane_4", "ws_1", "tab_1", "unknown", Some("pane_1"));
+    projected.agents = vec![dispatcher, stale, current, unknown];
+
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&tree_sort_config()));
+    state.set_snapshot(Box::new(projected.clone()));
+    state.set_pane_surface(surface());
+    let text = frame_text(&mut state);
+    let order = state
+        .hits
+        .agents
+        .iter()
+        .map(|(_, pane_id)| pane_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        order,
+        ["pane_1", "pane_2", "pane_4", "pane_3"],
+        "a child of an earlier session in the parent pane is a root; frame: {text}"
+    );
+    assert!(text.contains("├─ current"), "frame: {text}");
+    assert!(text.contains("└─ unknown"), "frame: {text}");
+    let stale_line = text
+        .lines()
+        .find(|line| line.contains("stale"))
+        .expect("stale row");
+    assert!(
+        !stale_line.contains('─'),
+        "no guide for a root: {stale_line}"
+    );
+
+    // Focusing that root leaves the unrelated parent folded; focusing a real
+    // child unfolds it.
+    state.collapsed_agent_subtrees.insert("pane_1".into());
+    let mut focus_stale = projected.clone();
+    focus_stale.revision = 2;
+    focus_stale.focused_pane_id = Some("pane_3".into());
+    state.set_snapshot(Box::new(focus_stale));
+    assert!(state.collapsed_agent_subtrees.contains("pane_1"));
+    let mut focus_current = projected;
+    focus_current.revision = 3;
+    focus_current.focused_pane_id = Some("pane_2".into());
+    state.set_snapshot(Box::new(focus_current));
+    assert!(!state.collapsed_agent_subtrees.contains("pane_1"));
 }
 
 #[test]

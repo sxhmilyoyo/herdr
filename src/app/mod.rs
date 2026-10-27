@@ -446,7 +446,8 @@ impl App {
             );
             restored_terminals = terminals;
             restored_terminal_runtimes = terminal_runtimes.into();
-            restored_pane_parents = crate::persist::restored_pane_parents(&snap, &ws);
+            restored_pane_parents =
+                pane_parents::restored_links(crate::persist::restored_pane_parents(&snap, &ws));
             if ws.is_empty() {
                 crate::logging::session_restored(0, "empty");
                 (Vec::new(), None, 0)
@@ -731,7 +732,9 @@ impl App {
         let pane_id_aliases = crate::persist::handoff_pane_aliases(snapshot, &workspaces);
 
         app.state.pane_id_aliases = pane_id_aliases;
-        app.state.pane_parents = crate::persist::restored_pane_parents(snapshot, &workspaces);
+        app.state.pane_parents = pane_parents::restored_links(
+            crate::persist::restored_pane_parents(snapshot, &workspaces),
+        );
         app.state.workspaces = workspaces;
         app.state.terminals = terminals;
         app.terminal_runtimes = runtimes.into();
