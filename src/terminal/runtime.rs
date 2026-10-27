@@ -230,10 +230,6 @@ impl TerminalRuntime {
         self.0.apply_host_terminal_appearance(appearance);
     }
 
-    pub fn reassert_host_terminal_appearance(&self) {
-        self.0.reassert_host_terminal_appearance();
-    }
-
     pub fn begin_graceful_release(&self, agent: crate::detect::Agent) {
         self.0.begin_graceful_release(agent);
     }
@@ -661,8 +657,8 @@ impl TerminalRuntime {
         ))
     }
 
-    pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) {
-        self.0.test_process_pty_bytes(bytes);
+    pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) -> Vec<Bytes> {
+        self.0.test_process_pty_bytes(bytes)
     }
 
     pub(crate) fn test_with_scrollback_bytes(

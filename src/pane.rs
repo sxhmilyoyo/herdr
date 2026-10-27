@@ -2336,11 +2336,6 @@ impl PaneRuntime {
             .write_terminal_response(|| self.terminal.apply_host_terminal_appearance(appearance));
     }
 
-    pub fn reassert_host_terminal_appearance(&self) {
-        self.io
-            .write_terminal_response(|| self.terminal.host_terminal_appearance_report());
-    }
-
     // Runtime construction threads PTY geometry, host context, launch policy, and render hooks.
     #[allow(clippy::too_many_arguments)]
     pub fn spawn(
@@ -4024,16 +4019,17 @@ impl PaneRuntime {
         (release_tx, writer)
     }
 
-    pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) {
+    pub(crate) fn test_process_pty_bytes(&self, bytes: &[u8]) -> Vec<Bytes> {
         let _content_write_guard = match self.content_write_lock.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
         self.content_seq.fetch_add(1, Ordering::AcqRel);
         let (tx, _rx) = mpsc::channel(1);
-        let _ = self.terminal.process_pty_bytes(self.pane_id, 0, bytes, &tx);
+        let result = self.terminal.process_pty_bytes(self.pane_id, 0, bytes, &tx);
         self.content_seq.fetch_add(1, Ordering::Release);
         self.compression.wake();
+        result.terminal_responses
     }
 
     pub(crate) fn test_with_scrollback_bytes(
@@ -5490,20 +5486,6 @@ mod tests {
                 .await
                 .is_err()
         );
-    }
-
-    #[tokio::test]
-    async fn subscribed_child_is_renotified_when_the_host_background_changes() {
-        let (runtime, mut rx) = PaneRuntime::test_with_channel(80, 24);
-        runtime.apply_host_terminal_appearance(Some(crate::terminal_theme::HostAppearance::Dark));
-        runtime.test_process_pty_bytes(b"\x1b[?2031h");
-
-        // The appearance report and the default background travel on separate paths, so a child
-        // that re-reads OSC 11 on the report can see the previous background. Re-notify once the
-        // background itself has changed.
-        runtime.reassert_host_terminal_appearance();
-
-        assert_eq!(rx.try_recv(), Ok(Bytes::from_static(b"\x1b[?997;1n")));
     }
 
     #[tokio::test]
